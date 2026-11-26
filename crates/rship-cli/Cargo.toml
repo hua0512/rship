@@ -1,0 +1,76 @@
+[package]
+name = "rship-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "High-throughput, low-memory, crash-resumable multi-cloud transfer and sync CLI powered by rship"
+
+[[bin]]
+name = "rship"
+path = "src/main.rs"
+
+[features]
+default = ["all-backends", "mimalloc"]
+all-backends = [
+    "backend-local",
+    "backend-gdrive",
+    "backend-s3",
+    "backend-webdav",
+    "backend-onedrive",
+    "backend-sftp",
+    "backend-dropbox",
+    "backend-gcs",
+    "backend-azureblob",
+    "backend-crypt",
+]
+backend-local = ["rship/local", "rship-backends/local"]
+backend-gdrive = ["rship/gdrive", "rship-backends/gdrive"]
+backend-s3 = ["rship/s3", "rship-backends/s3"]
+backend-webdav = ["rship/webdav", "rship-backends/webdav"]
+backend-onedrive = ["rship/onedrive", "rship-backends/onedrive"]
+backend-sftp = ["rship/sftp", "rship-backends/sftp"]
+backend-dropbox = ["rship/dropbox", "rship-backends/dropbox"]
+backend-gcs = ["rship/gcs", "rship-backends/gcs"]
+backend-azureblob = ["rship/azureblob", "rship-backends/azureblob"]
+backend-crypt = ["rship/crypt", "dep:rship-crypto"]
+mimalloc = ["dep:mimalloc"]
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+futures.workspace = true
+mimalloc = { workspace = true, optional = true }
+rship = { workspace = true, default-features = false, features = ["sqlite", "keyring", "http"] }
+rship-backends = { workspace = true, default-features = false }
+rship-core.workspace = true
+rship-crypto = { workspace = true, optional = true }
+rship-state.workspace = true
+rship-transport.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
+toml.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,65 @@
+---
+title: SSH / SFTP
+description: 基于 russh 与 russh-sftp 的 SFTP 传输驱动，支持 .rship.part 字节偏移崩溃续传、posix-rename 原子提交与 known_hosts 校验。
+section: providers
+---
+
+`sftp` 后端（`backend-sftp`）基于 `russh` + `russh-sftp` 构建。所有远端传输均写入临时暂存文件，支持字节偏移断点续传，并通过 `posix-rename` 原子提交。
+
+## 配置示例
+
+<CodeTabs>
+<CodeTab label="SSH 密钥（推荐）">
+
+```bash
+rship auth sftp vps \
+  --host 10.0.0.5 \
+  --port 22 \
+  --user deploy \
+  --key-file ~/.ssh/id_ed25519 \
+  --root-path /srv/backups
+
+# 校验主机密钥指纹，并通过 statvfs 查询磁盘配额
+rship about vps:
+```
+
+</CodeTab>
+<CodeTab label="密码 / 加密私钥">
+
+```bash
+rship auth sftp nas \
+  --host nas.local \
+  --user backup \
+  --password "<SSH_PASSWORD>" \
+  --host-key-policy strict \
+  --known-hosts ~/.ssh/known_hosts
+
+# 将密码迁移至系统密钥环保存
+rship auth keyring-migrate
+```
+
+</CodeTab>
+</CodeTabs>
+
+## 参数参考（`rship auth sftp`）
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | 远端逻辑名称（如 `vps`、`nas-ssh`） |
+| `--host` | 必填 | SSH 服务器主机名或 IP 地址 |
+| `--port` | `22` | TCP 端口 |
+| `--user` | 必填 | SSH 用户名 |
+| `--root-path` | 空 | 远端工作根目录（如 `/data/backups` 或相对路径 `backups`） |
+| `--key-file` | 无 | 私钥文件路径（支持 `ed25519`、`ecdsa`、`rsa`） |
+| `--key-passphrase` | 无 | 加密私钥文件的口令 |
+| `--password` | 无 | 密码认证凭据 |
+| `--host-key-policy` | `accept-new` | `accept-new`（首次信任 TOFU）、`strict`（强制匹配 `known_hosts`）或 `insecure` |
+| `--known-hosts` | 默认 SSH 路径 | 自定义 `known_hosts` 文件路径 |
+
+## 协议实现与崩溃续传
+
+- **直传与断点暂存**：不超过 `256 KiB` 的文件直接写入临时文件并提交；更大的文件每 `16 MiB` 记录一次检查点到 `.rship.part.*` 暂存文件，支持按字节偏移崩溃续传，完成后通过 SFTP `posix-rename` 原子落盘。
+- **有界惰性连接池**：在 `rship` 并发上限内按需建立 SSH/SFTP 通道，并对 `connect_timeout`（`15s`）与 `io_timeout`（`30s`）分别限时。
+- **存储配额查询**：`rship about <remote>:` 直接调用远端 `statvfs` 扩展，无需启动 SSH Shell。
+- **无服务端拷贝**：与 rclone 的 SFTP 后端一致，`sftp -> sftp` 传输会经由本地 `BufferPool` 流式转发（RSS 上限 `<= 64 MiB`）。
+- **rclone 迁移**：通过 `rship config import-rclone` 直接导入 `host`、`port`、`user`、混淆后的 `pass`、`key_file` 与 `key_file_pass`。

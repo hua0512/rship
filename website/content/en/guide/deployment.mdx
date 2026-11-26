@@ -1,0 +1,98 @@
+---
+title: Headless VPS, Docker & Keyring
+description: Run rship on headless Linux servers and non-root Docker containers with isolated config paths, portable auth bundles, and OS Keyring security.
+section: getting-started
+---
+
+`rship` runs cleanly on `$4` VPS instances, CI workers, and locked-down containers without desktop environments or D-Bus keyrings.
+
+## Global Path Overrides & Profiles
+
+Every `rship` subcommand accepts global `--config` and `--state-dir` flags (or the `RSHIP_CONFIG` and `RSHIP_STATE_DIR` environment variables) to isolate profiles or share volumes cleanly:
+
+```bash
+# Inspect default config.toml and state/token paths on this machine
+rship config path
+
+# Isolate a job profile explicitly
+rship --config /srv/rship/config.toml --state-dir /srv/rship/state ls gdrive:
+```
+
+On Linux, default locations follow XDG conventions: `~/.config/rship/config.toml` and `~/.local/share/rship/tokens/<remote>.json`.
+
+## Desktop → Headless VPS Credential Bundles
+
+For headless servers without an OS keyring or browser, authorize interactively once on your laptop and transfer a self-contained bundle. `rship auth export` automatically resolves `keyring://` references into the bundle, and `rship auth import` writes standalone `0600` files directly on the target host:
+
+```bash
+# 1. On desktop (resolves keyring:// secrets automatically):
+rship auth export gdrive -o gdrive.bundle
+
+# 2. Copy over SSH, import on the VPS, and wipe the temporary bundle:
+scp gdrive.bundle user@vps:~/
+ssh user@vps 'rship auth import --input ~/gdrive.bundle && rm -f ~/gdrive.bundle'
+
+# 3. Verify paths and remote connectivity:
+ssh user@vps 'rship config path && rship config test gdrive'
+```
+
+## Docker & Docker Compose
+
+Place `config.toml` and `state/` (containing `tokens/` and SQLite WAL files) in a host directory such as `/srv/rship`, and mount them into your service container:
+
+```yaml
+services:
+  rship-worker:
+    image: alpine:latest
+    environment:
+      - RSHIP_CONFIG=/rship/config.toml
+      - RSHIP_STATE_DIR=/rship/state
+    volumes:
+      - /srv/rship:/rship
+      # Optional: reuse static Linux musl binary (zero runtime deps)
+      - /usr/local/bin/rship:/usr/local/bin/rship:ro
+    command: ["rship", "sync", "/data", "gdrive:backups", "--adaptive", "--max-delete", "100"]
+```
+
+<Callout type="warning" title="Writable State Directory Required">
+Do **not** mount `state/` read-only (`:ro`). `rship` persists refreshed OAuth tokens to `state/tokens/<remote>.json` and checkpoints in-flight uploads in `state/state.db` (SQLite WAL). If your container runs as a non-root user, ensure `/srv/rship/state` is writable by that UID/GID.
+</Callout>
+
+## Securing Desktop Secrets with OS Keyring
+
+On desktop workstations (Windows, macOS, and Linux with Secret Service), migrate inline secrets out of `config.toml` into your OS credential vault:
+
+```bash
+# Moves client secrets, S3 keys, SFTP passwords, and crypt passphrases into keyring://rship/...
+rship auth keyring-migrate
+
+# Confirm secrets are replaced with keyring:// URIs
+rship config show
+```
+
+## Production Recipes
+
+### 1. Nightly Encrypted Cron / Systemd Backup
+
+Pair `flock -n` (skip overlapping ticks) with `--max-delete` so a partial outage never triggers mass deletion:
+
+```bash
+flock -n /tmp/rship-nightly.lock \
+  rship sync /srv/data vault:nightly --adaptive --max-buffer-mem 16M --max-delete 100
+```
+
+### 2. Zero-Disk Cloud-to-Cloud Migration
+
+Transfer directly between cloud providers through bounded `BufferPool` memory without staging archives on local VPS disk:
+
+```bash
+rship copy gdrive:archive r2:archive --adaptive --max-buffer-mem 16M
+```
+
+### 3. Streaming Database Dump to Encrypted Vault
+
+Pipe compressed `stdin` straight into a [client-side encrypted vault](/guide/encryption):
+
+```bash
+pg_dump prod | zstd -T0 | rship rcat vault:db/prod-$(date +%F).sql.zst
+```

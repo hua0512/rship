@@ -1,0 +1,23 @@
+{
+  "version": "0.1.0",
+  "description": "Cross-platform, low-memory, crash-resumable multi-cloud transfer and sync engine",
+  "homepage": "https://hua0512.github.io/rship/",
+  "license": "MIT OR Apache-2.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/hua0512/rship/releases/download/v0.1.0/rship-v0.1.0-x86_64-pc-windows-msvc.zip",
+      "hash": "REPLACE_WITH_SHA256_WINDOWS_MSVC",
+      "extract_dir": "rship-v0.1.0-x86_64-pc-windows-msvc"
+    }
+  },
+  "bin": "rship.exe",
+  "checkver": "github",
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/hua0512/rship/releases/download/v$version/rship-v$version-x86_64-pc-windows-msvc.zip",
+        "extract_dir": "rship-v$version-x86_64-pc-windows-msvc"
+      }
+    }
+  }
+}

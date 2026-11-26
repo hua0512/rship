@@ -1,0 +1,202 @@
+---
+title: Rust SDK 与生产嵌入
+description: 将 RshipClient 与 FailoverPool 直接嵌入 Tokio 服务，共享 HTTP 传输层与 SQLite WAL 状态机，公共 API 零 anyhow 依赖。
+section: sdk
+---
+
+在高吞吐自动化上传流水线中，你可以用**独立 CLI**，也可以直接引入顶层 **`rship` Rust SDK crate** 替代 `rclone`。该 crate 公共库 API 不暴露 `anyhow`，启用 `#![warn(missing_docs)]`，默认特性精简为 `default = ["local"]`。
+
+<Callout type="info" title="rship 与 Apache OpenDAL / object_store 的定位差异">
+`Apache OpenDAL` 与 `object_store` 擅长提供底层统一对象访问原语（`read`、`write`、`list`）。**`rship` 则是构建在 10 大存储驱动之上的完整传输与同步引擎**，开箱自带 SQLite WAL 崩溃续传、`<= 64 MiB` `BufferPool` 背压上限、Falcon 双车道调度、三树 `bisync`、CUBIC 自适应限流与多账号配额切换（`FailoverPool`）。
+</Callout>
+
+## 方案 A：原生 Rust SDK（`rship` Crate，推荐）
+
+将 `rship` 直接嵌入 Tokio 服务，可省去子进程拉起、stdout/stderr JSON 解析与跨进程锁开销，并在所有工作线程间共享单一 `HttpTransport`、按账号隔离的 `ScopedLimiter`、`dir_id_cache`、`mkdir_locks`、`BufferPool` 以及 WAL 模式的 `StateActor`。
+
+### 1. 精简 `Cargo.toml`
+
+工作区面向 **Rust `1.100+`**（`edition = "2024"`）。在 1.0 前 API 稳定并发布至 `crates.io` 之前，请直接通过 Git 锁定 release tag：
+
+```toml
+[dependencies]
+# 默认特性：轻量级纯本地 SDK（零 HTTP、零 SQLite、零系统密钥环）：
+rship = { git = "https://github.com/hua0512/rship", tag = "v0.1.0" }
+
+# 生产环境：本地 + Google Drive + SQLite 持久化断点续传：
+rship = { git = "https://github.com/hua0512/rship", tag = "v0.1.0", features = ["gdrive", "sqlite"] }
+
+# 全部 10 个后端 + SQLite + 系统密钥环：
+rship = { git = "https://github.com/hua0512/rship", tag = "v0.1.0", features = ["all-backends", "sqlite", "keyring"] }
+```
+
+### 2. `RshipClient`：`rclone.conf` 加载、直接 Stat `move_files`、事件推送与优雅停机
+
+```rust
+use rship::prelude::*;
+
+pub async fn run_pipeline() -> Result<()> {
+    // 加载已有 rclone.conf（或使用 .config_file("/app/config/rship.toml")）
+    let client = RshipClient::builder()
+        .rclone_conf("/app/config/rclone.conf")
+        .state_dir("/app/state")
+        .tps_limit(10.0)
+        .gdrive_stop_on_upload_limit(true)
+        .gdrive_low_level_retries(3)
+        .build()?;
+
+    let cancel = CancelFlag::new();
+
+    // 仅对指定路径直接 stat 并校验移动，绝不扫描正在写入的 .part 临时文件
+    let report = client
+        .move_files(
+            "/var/backups/outgoing",
+            "gdrive-1:backups/2026-11",
+            ["archive.tar.zst", "checksums.sha256"],
+        )
+        .bwlimit(20 * 1024 * 1024)
+        .chunk_size(256 * 1024 * 1024)
+        .retries(1)
+        .cancel_on(cancel.clone())
+        .on_event(|ev| match ev {
+            TransferEvent::PhaseChanged { phase, .. } => tracing::info!(%phase, "phase"),
+            TransferEvent::FileCompleted { result, .. } => tracing::info!(?result, "file done"),
+            _ => {}
+        })
+        .run()
+        .await?;
+
+    assert!(report.is_success());
+
+    // 精确移动单个元数据伴生文件（moveto）
+    let sidecar_report = client
+        .move_file(
+            "/var/backups/outgoing/manifest.json",
+            "gdrive-1:backups/2026-11/manifest.json",
+        )
+        .bwlimit(20 * 1024 * 1024)
+        .retries(1)
+        .run()
+        .await?;
+    assert!(sidecar_report.is_success());
+
+    // 等待活跃任务完成、刷新 SQLite WAL 并回收后台 actor 线程
+    client.shutdown().await?;
+    Ok(())
+}
+```
+
+### 3. 编程式远端配置构造器与惰性运行时
+
+所有声明式 `*RemoteConfig` 结构体（`S3RemoteConfig`、`GdriveRemoteConfig`、`GcsRemoteConfig`、`AzureblobRemoteConfig`、`OnedriveRemoteConfig`、`DropboxRemoteConfig`、`WebdavRemoteConfig`、`SftpRemoteConfig`、`CryptRemoteConfig`）均标记了 `#[non_exhaustive]`，在 `Debug` 输出中自动脱敏密钥，并可通过 `Into<RemoteConfig>` 直接传入 `ClientBuilder::remote`：
+
+```rust
+use rship::prelude::*;
+
+pub async fn sync_encrypted_to_r2() -> Result<RunReport> {
+    let client = RshipClient::builder()
+        .ephemeral()
+        .remote(
+            "r2",
+            S3RemoteConfig::new("r2")
+                .with_bucket("media-archive")
+                .with_endpoint("https://<account-id>.r2.cloudflarestorage.com")
+                .with_credentials("AKIA...", "secret-key"),
+        )
+        .remote(
+            "vault",
+            CryptRemoteConfig::new("r2:encrypted")
+                .with_password("strong-passphrase"),
+        )
+        .build()?;
+
+    let report = client
+        .sync("/var/backups", "vault:daily")
+        .delete_mode(DeleteMode::After)
+        .backup_dir("vault:deleted-archive")
+        .bwlimit_schedule("08:00,20M 23:00,off".parse()?)
+        .run()
+        .await?;
+
+    client.shutdown().await?;
+    Ok(report)
+}
+```
+
+- **惰性初始化 `HttpTransport` 与 `StateActor`**：纯本地与 SFTP 目标完全跳过 TLS 根证书加载与 HTTP 连接池分配；只读操作（`stat`、`list`、`resolve_any`）不会打开 `journal.db` 或拉起后台 SQLite 线程，仅在传输、`bisync` 或 GDrive `changes.list` 需要持久化状态时按需打开。
+
+### 4. 多账号 750 GiB/天配额自动切换（`FailoverPool`）
+
+```rust
+use rship::prelude::*;
+
+pub async fn upload_with_account_failover(
+    client: &RshipClient,
+    local_dir: &str,
+    remote_prefix: &str,
+    files: &[&str],
+    cancel: CancelFlag,
+) -> Result<(String, RunReport)> {
+    let pool = client.failover_pool(&["gdrive-1", "gdrive-2", "gdrive-3"])?;
+    let dst_rel = RelPath::parse(remote_prefix)?;
+
+    pool.run_with_failover(
+        DEFAULT_QUOTA_COOLDOWN,
+        DEFAULT_THROTTLE_COOLDOWN,
+        |acct_name, backend| {
+            let client = client.clone();
+            let dst = TransferTarget::backend(backend, dst_rel.clone());
+            let files: Vec<String> = files.iter().map(|s| (*s).to_string()).collect();
+            let cancel = cancel.clone();
+            async move {
+                let rep = client
+                    .move_files(local_dir, dst, files)
+                    .bwlimit(20 * 1024 * 1024)
+                    .chunk_size(256 * 1024 * 1024)
+                    .retries(1)
+                    .cancel_on(cancel)
+                    .run()
+                    .await?;
+
+                if rep
+                    .file_results
+                    .iter()
+                    .any(|r| r.error_kind == Some(ErrorKind::QuotaExceeded))
+                {
+                    return Err(Error::quota_exceeded(format!(
+                        "account `{acct_name}` reached daily upload quota"
+                    )));
+                }
+                Ok(rep)
+            }
+        },
+    )
+    .await
+}
+```
+
+### 5. 无盘临时模式与底层组件复用
+
+- `RshipClient::ephemeral()` 完全在内存中运行（`MemoryJournalStore` + `MemorySyncIndex` + 内存态 `rclone.conf` 凭据），不向磁盘写入任何 SQLite 或配置文件。
+- `client.resolve_any(target).await?` 支持自动识别目录前缀或单个文件并返回统一的 `ResolvedTarget`（`backend`、`prefix`、`single_file`）。
+- 底层 crate 通过 `rship::core`、`rship::backends`、`rship::transport`、`rship::state` 与 `rship::crypto` 重新导出，便于自定义 `StorageBackend`、`JournalStore`、`EventSink`，或结合 `VirtualClock` + `ChaosBackend` 编写确定性测试。
+
+### 6. 事件与错误契约
+
+- **`TransferEvent`**（`#[non_exhaustive]`）：每个任务按严格递增的 `seq >= 1` 推送事件；`JobStarted` 固定为 `seq == 1`，`JobFinished` 保证作为终止事件发出（即使任务被取消或触发致命错误），其余还包括 `PhaseChanged`、`FileStarted`、`FileCompleted` 与 `ConflictDetected`。
+- **`RetryClass` 与 `ErrorKind`**（`#[non_exhaustive]`）：错误归类为清晰的 `RetryClass`（`Retryable`、`Throttled`、`Permanent`、`SessionExpired`、`SourceMutated`、`Cancelled`）与结构化 `ErrorKind` 变体（`QuotaExceeded`、`RateLimited`、`Conflict`、`SourceMutated`、`Cancelled` 等），调用方无需靠匹配错误字符串判断原因。
+
+## 方案 B：生产环境 CLI 子进程（无头服务器 / Docker）
+
+如果外部调度器希望直接调用 `rship` 二进制而不链接 crate，只需先用 `rship config import-rclone`（或 `rship auth import`）导入一次凭据，再对照 [生产环境无头脚本对照](/guide/migration#production-headless-mapping) 与 [无头 VPS、Docker 与密钥环部署](/guide/deployment) 中的 `mkdir` / `moveto` / `--files-from` 等价命令即可。
+
+```bash
+rship --config /app/config/rship.toml --state-dir /app/state \
+  config import-rclone /app/config/rclone.conf
+```
+
+### 生产编排核心保障
+- **`--files-from` + `--no-traverse` 零目录扫描**：只对清单中的相对路径直接 `stat`，自动跳过同目录下正在写入的文件，也避免发起远端列表 API 请求。
+- **750 GiB/天配额上限快速失败**：开启 `--drive-stop-on-upload-limit` 后，上传接口返回的 `403 userRateLimitExceeded` 会立刻转为永久性 `QuotaExceeded`（`"error_kind": "quota_exceeded"`）；而短时 QPS 突发触发的 `403 rateLimitExceeded` 仍按 CUBIC 退避重试。
+- **结构化可观测输出**：`--json-progress --stats 1s` 向 `stderr` 持续输出 JSONL 生命周期事件，`--json` 在任务结束时向 `stdout` 写入一份带逐文件明细的最终 JSON 报告。
+- **跨重启断点续传**：活跃的 `session_uri` 与 `confirmed_offset` 持久化保存在 `journal.db`；进程遭遇 `SIGKILL` / `SIGTERM` 后重跑，通过 `308` / `ListParts` 原地续传，零重复文件。

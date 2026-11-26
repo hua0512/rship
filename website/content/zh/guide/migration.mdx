@@ -1,0 +1,69 @@
+---
+title: 从 rclone 迁移
+description: 一条命令导入现有 rclone.conf 远端配置，并在交互式命令对照器中对比两者在安全默认值与内存上限上的关键差异。
+section: getting-started
+---
+
+`rship` 定位为 `rclone` 的低内存、崩溃安全平替方案：无需重新逐个授权云盘即可直接导入已有凭据，并立即获得更稳健的并发控制与安全默认值。
+
+## 交互式命令转换器
+
+切换下方典型场景，对比常见 `rclone` 命令如何平滑迁移到 `rship`，以及引擎默认提供的加固特性：
+
+<RcloneTranslator />
+
+## 一条命令导入 `rclone.conf`
+
+`rship` 原生解析 **8 大云与网络后端** 的 INI 配置文件：**Google Drive**、**S3**、**OneDrive**、**Dropbox**、**GCS**、**Azure Blob**、**WebDAV** 与 **SFTP**。`rclone.conf` 中的 AES-256-CTR 混淆密码会自动解密并以 `0600` 严格权限写入 `config.toml`。
+
+```bash
+# 先以只读方式预览将被导入的远端配置，不触碰磁盘
+rship config import-rclone --dry-run
+
+# 从默认 rclone 路径导入（也可显式指定配置文件路径）
+rship config import-rclone ~/.config/rclone/rclone.conf
+
+# 查看导入后的配置（默认自动脱敏隐私字段）
+rship config show
+
+# 可选：将配置中的明文密钥进一步锁入系统密钥环
+rship auth keyring-migrate
+```
+
+<Callout type="tip" title="免转换直接读取 rclone.conf">
+如果你正在接入 [Rust SDK](/sdk/embedding)，或容器内本身已经挂载了只读的 `rclone.conf`，可直接通过 `RshipClient::builder().rclone_conf("/app/config/rclone.conf")` 直接加载，无需预先执行 `import-rclone`。
+</Callout>
+
+<Callout type="warning" title="注意：与 rclone crypt 密文格式不兼容">
+`rship` 采用独立设计的 **64 KiB 可随机 Seek STREAM OAE2** 加密协议（`XChaCha20-Poly1305` + SIV 文件名），**无法直接原地解密旧的 `rclone crypt` 数据桶**（`XSalsa20-Poly1305` + EME）。`import-rclone` 仅负责迁移底层 8 大云盘配置；若需切换至 `rship` 加密，请将旧数据解密并重新写入新的 `rship` 加密保险库，勿直接挂载历史密文目录。
+</Callout>
+
+## 与 `rclone` 的关键行为差异
+
+| 维度 | `rclone` 默认行为 | `rship` 默认值与工程保障 |
+| :--- | :--- | :--- |
+| **峰值内存** | 随 `--transfers` 与单块缓冲急速膨胀（4 路并发上传 GDrive 可达 `315 MiB`） | `BufferPool` 字节信号量硬上限（`<= 64 MiB` RSS；云盘实测通常为 `16–22 MiB`） |
+| **崩溃恢复** | 进程被 `SIGKILL` 后需重传未提交的分片/文件 | SQLite WAL `Intent` 日志 + 模糊提交对账（断点续传 `0` 重复文件） |
+| **同步误删熔断** | 目录遍历部分失败时如未额外设防可能误删目标文件 | **Observation Completeness Gate** 在任一遍历页失败时熔断全部删除；默认 `--delete-after` + `--max-delete` |
+| **双向冲突策略** | 依赖用户手动配置冲突参数 | 三树模型 `bisync` 默认启用 `keep-both`，绝不静默覆盖任何并发修改 |
+| **GDrive 750 GiB 配额** | 遇到 `userRateLimitExceeded` 持续重试阻塞任务 | 开启 `--drive-stop-on-upload-limit` 后立即抛出 `QuotaExceeded`，配合 `FailoverPool` 毫秒切换账号 |
+| **二进制体积与依赖** | Go 运行时二进制 | 单一自包含 Rust 二进制 |
+
+## 何时选择 rship，何时继续用 rclone
+
+`rship` 刻意聚焦 10 大主流存储协议的高可靠传输，而非盲目覆盖 `rclone` 的全部边缘生态：
+
+- **适合直接切换 `rship`**：低配 VPS / Docker 严格受限于内存（`<= 64 MiB` RSS）；需要抗 `SIGKILL` 零重复断点续传；需要默认 `keep-both` 防误覆盖的双向同步；需要按字节偏移随机读取加密文件；或需要原生 Rust SDK 嵌入。
+- **建议继续保留 `rclone`**：重度依赖 `rclone mount`（FUSE / WinFsp 本地磁盘挂载）、`rcd` Web 管理后台、必须原地读取既有 `rclone crypt` 密文桶，或使用 `rship` 当前 10 个核心后端之外的小众网盘。
+
+<span id="production-headless-mapping" className="block scroll-mt-24" aria-hidden="true" />
+
+## 生产环境无头脚本对照
+
+适用于 CI / systemd 等直接以 CLI 子进程替换 `rclone` 的自动化流水线：
+
+| 操作 | `rship` 对应命令 |
+| :--- | :--- |
+| **幂等 `mkdir`** | `rship --config /app/rship.toml --state-dir /app/state --tpslimit 8 mkdir gdrive:archive/2026` |
+| **单文件精准 `moveto`** | `rship --config ... --drive-stop-on-upload-limit --tpslimit 8 moveto /data/manifest.json gdrive:archive/manifest.json --bwlimit 20M --chunk-size 256M --retries 1 --json` |
+| **清单批量 `move`** | `rship --config ... --drive-stop-on-upload-limit move /data gdrive:archive --files-from /tmp/files.txt --no-traverse --bwlimit 20M --json --json-progress --stats 1s` |

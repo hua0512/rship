@@ -1,0 +1,37 @@
+# cargo-nextest configuration (https://nexte.st/docs/configuration/)
+
+[store]
+dir = "target/nextest"
+
+[profile.default]
+status-level = "pass"
+final-status-level = "flaky"
+failure-output = "immediate-final"
+slow-timeout = { period = "30s", terminate-after = 4 }
+leak-timeout = "100ms"
+
+[profile.ci]
+fail-fast = false
+retries = { backoff = "exponential", count = 2, delay = "1s", jitter = true }
+status-level = "retry"
+final-status-level = "flaky"
+failure-output = "immediate-final"
+slow-timeout = { period = "60s", terminate-after = 3 }
+leak-timeout = "500ms"
+
+[profile.ci.junit]
+# Resolved relative to `<store.dir>/<profile>` => `target/nextest/ci/junit.xml`.
+path = "junit.xml"
+report-name = "rship-ci"
+store-success-output = false
+store-failure-output = true
+
+[[profile.ci.overrides]]
+filter = 'test(/^acceptance_/)'
+slow-timeout = { period = "120s", terminate-after = 3 }
+
+[[profile.ci.overrides]]
+# Deterministic simulation (DST), chaos and crash-sweep tests are never retried: a failure
+# that passes on retry is an interleaving or ordering bug, not a flake, and must fail CI.
+filter = 'test(/chaos::tests::/) | test(/crash_sweep/) | test(/(^|::)dst_/)'
+retries = 0

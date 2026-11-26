@@ -1,0 +1,54 @@
+[package]
+name = "rship-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+bytes = "1.12"
+libfuzzer-sys = "0.4"
+rship-backends = { path = "../crates/rship-backends", default-features = false, features = ["s3", "azureblob", "webdav"] }
+rship-core = { path = "../crates/rship-core" }
+rship-crypto = { path = "../crates/rship-crypto" }
+
+[[bin]]
+name = "s3_xml"
+path = "fuzz_targets/s3_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "azure_xml"
+path = "fuzz_targets/azure_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webdav_xml"
+path = "fuzz_targets/webdav_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rclone_ini"
+path = "fuzz_targets/rclone_ini.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crypt_decrypt"
+path = "fuzz_targets/crypt_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+# Standalone workspace so fuzzing dependencies never pollute root Cargo.lock
+# or break root `--locked` builds.
+[workspace]

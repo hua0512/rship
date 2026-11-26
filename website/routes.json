@@ -1,0 +1,84 @@
+{
+  "navSections": [
+    {
+      "id": "getting-started",
+      "slugs": [
+        "guide/getting-started",
+        "guide/migration",
+        "guide/deployment"
+      ],
+      "collapsible": false
+    },
+    {
+      "id": "core",
+      "slugs": [
+        "guide/cli-reference",
+        "guide/bisync",
+        "guide/encryption",
+        "guide/troubleshooting"
+      ],
+      "collapsible": true,
+      "defaultOpen": true
+    },
+    {
+      "id": "providers",
+      "slugs": [
+        "providers",
+        "providers/s3",
+        "providers/gdrive",
+        "providers/sftp",
+        "providers/webdav",
+        "providers/gcs",
+        "providers/azureblob",
+        "providers/dropbox",
+        "providers/onedrive"
+      ],
+      "collapsible": true,
+      "defaultOpen": false
+    },
+    {
+      "id": "sdk",
+      "slugs": [
+        "sdk/embedding",
+        "architecture",
+        "architecture/adding-a-provider"
+      ],
+      "collapsible": true,
+      "defaultOpen": true
+    },
+    {
+      "id": "performance",
+      "slugs": [
+        "benchmarks",
+        "privacy"
+      ],
+      "collapsible": false
+    }
+  ],
+  "dirSlugs": [
+    "providers",
+    "architecture",
+    "benchmarks"
+  ],
+  "legacyRedirects": {
+    "guide/google-oauth": "/providers/gdrive#oauth-20-setup"
+  },
+  "slugLabs": {
+    "benchmarks": [
+      "VpsMemoryLab"
+    ],
+    "providers": [
+      "ProviderMatrix",
+      "ProviderComposer"
+    ],
+    "guide/encryption": [
+      "Oae2Xray"
+    ],
+    "guide/migration": [
+      "RcloneTranslator"
+    ],
+    "architecture": [
+      "ArchitectureGraph"
+    ]
+  }
+}

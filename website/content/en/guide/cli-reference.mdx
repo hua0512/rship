@@ -1,0 +1,114 @@
+---
+title: CLI Reference
+description: Complete command, transfer flag, filtering rule, and durability reference for the rship CLI.
+section: core
+---
+
+`rship` provides clean, color-aware terminal output honoring `NO_COLOR`, `CLICOLOR_FORCE`, `TERM=dumb`, and `IsTerminal`. Piped commands (`cat`, `hashsum`, `--json`) never emit stray ANSI escape codes.
+
+Short help (`-h`) shows only everyday options; pass `--help` to view every advanced, network, and backend override grouped cleanly by category.
+
+## Global Flags
+
+| Flag | Env Variable | Description |
+| :--- | :--- | :--- |
+| `-p, --profile <NAME>` | `RSHIP_PROFILE` | Apply a named `[profiles.<NAME>]` preset from `config.toml` (layers over `[defaults]`; explicit CLI flags win) |
+| `--config <PATH>` | `RSHIP_CONFIG` | Override `config.toml` path (default: OS config dir / `rship/config.toml`) |
+| `--state-dir <PATH>` | `RSHIP_STATE_DIR` | Override SQLite state & token directory |
+| `--ca-cert <PATH>` | `RSHIP_CA_CERT` | Custom PEM CA certificate bundle for corporate/proxy TLS roots |
+| `--proxy <URL>` | `RSHIP_PROXY` | Explicit proxy (`http://`, `https://`, `socks5://`, `socks5h://`) for Control & Data Planes |
+| `--connect-timeout <DUR>` | — | TCP/TLS connect timeout (e.g. `15s`, `30s`) |
+| `--stall-timeout <DUR>` | — | Data-plane byte-progress idle stall watchdog timeout (e.g. `30s`, `2m`) |
+| `--control-timeout <DUR>` | — | Control-plane metadata/RPC timeout (e.g. `60s`, `2m`) |
+| `--tpslimit <N>` | `RSHIP_TPSLIMIT` | Proactive global API requests-per-second ceiling across reads & writes |
+| `--drive-stop-on-upload-limit` | `RSHIP_DRIVE_STOP_ON_UPLOAD_LIMIT` | Fast-fail with `QuotaExceeded` on Google Drive 750 GiB/day `403 userRateLimitExceeded` |
+| `--low-level-retries <N>` | `RSHIP_LOW_LEVEL_RETRIES` | Override per-HTTP-request low-level retry count on cloud backends |
+| `--no-changes-feed` | — | Bypass Google Drive `changes.list` incremental inventory cache |
+| `-v` / `-vv` / `-vvv` | — | Increase tracing verbosity (`info` / `debug` / `trace`) |
+
+## Transfer & Synchronization Commands
+
+| Command | Summary |
+| :--- | :--- |
+| `rship copy <SRC> <DST>` | Copy files or directories from source to destination without deleting destination extras |
+| `rship copyto <SRC> <DST>` | Copy a single file to an exact destination path (supports rename & server-side copy) |
+| `rship sync <SRC> <DST>` | Mirror source into destination; deletes extraneous destination files only after Observation Completeness Gate passes |
+| `rship move <SRC> <DST>` | Move files; deletes each source file **only after verified remote commit** (`--delete-empty-src-dirs` optional) |
+| `rship moveto <SRC> <DST>` | Move a single file to an exact destination path |
+| `rship bisync <A> <B>` | [Three-Tree bidirectional sync](/guide/bisync) (`--conflict-strategy keep-both|abort|prefer-a|prefer-b`, `--resync`) |
+
+### Key Transfer Flags
+
+- `--transfers <N>` *(default: `[defaults]` or `4`)* — Concurrent file workers.
+- `--adaptive` / `--no-adaptive` — Enable or explicitly disable Falcon dual-lane (`<= 1 MiB` small pipelined vs `> 1 MiB` large streaming) concurrency control.
+- `--part-concurrency <N>` *(default: `[defaults]` or `4`)* — Concurrent parts for parallel-multipart backends (S3, Azure Blob, Local).
+- `--chunk-size <SIZE>` — Override protocol chunk size (`64M`, `128M`, `256K`).
+- `--max-buffer-mem <SIZE>` — Hard cap on `BufferPool` byte semaphore (e.g. `8M`, `16M`).
+- `--bwlimit <RATE>` — Sustained bandwidth cap or timetable (`10M`, `500K`, `"08:00,10M 23:00,off"`, `off`).
+- `-n, --dry-run` — Simulate without mutating destination or state.
+- `--checksum` — Compare files by common hash instead of size + mtime.
+- `--delete-mode <after|during|before>` — Control when extraneous destination files are deleted during `sync` (default `after`; `--delete-before` / `--delete-during` / `--delete-after` remain supported aliases).
+- `--strict-source` — Freeze actively written source files into private snapshots before upload (`--strict-source-max-size`, default `256M`).
+- `--no-server-side-copy` — Force local streaming relay instead of cloud-side copy.
+- `--max-delete <LIMIT>` — Circuit breaker aborting sync/delete if planned deletions exceed a count (`100`), percentage (`50%`), or `off`.
+- `--retries <N>` *(default `5`)* — Per-file/session transfer retry limit.
+- `--no-traverse` — With `--files-from`, directly `stat` only listed paths without scanning directories.
+- `--no-lock` — Disable advisory destination `ProcessLock` when an external orchestrator manages concurrency.
+- `--tui` / `--progress` — Live multi-task terminal TUI dashboard (auto-enabled on interactive TTY unless `--json`).
+- `--json` / `--json-progress --stats 1s` — Machine-readable final summary JSON on `stdout` and real-time JSONL lifecycle progress on `stderr`.
+
+## Inspection, Verification & Streaming Commands
+
+| Command | Summary |
+| :--- | :--- |
+| `rship ls <TARGET>` | Streaming object listing (`-r/--recursive`, `--json`) |
+| `rship tree <TARGET>` | Directory tree view (`-L <DEPTH>`, `-d/--dirs-only`, `-s/--sizes`) |
+| `rship size <TARGET>` | Streaming file count and total byte size (`--json`) |
+| `rship about <TARGET>` | Storage quota & capacity bar (`total`, `used`, `free`, `trashed`, `--json`) |
+| `rship check <SRC> <DST>` | Concurrent read-only verification (`--checkers 8`, `--size-only`, `--one-way`, `--json`) |
+| `rship hashsum <ALGO> <TARGET>` | Streaming checksum manifest (`md5`, `sha256`, `sha1`, `crc32c`, `crc64nvme`) compatible with `sha256sum -c` |
+| `rship dedupe <TARGET>` | Resolve duplicate sibling filenames (e.g. Google Drive) safely by node ID (`--mode newest|oldest|largest|rename|skip`) |
+| `rship cat <TARGET>` | Stream a file or seekable byte range (`--offset`, `--count`) from any backend (including `crypt`) to `stdout` |
+| `rship rcat <TARGET>` | Stream `stdin` into a local, cloud, or encrypted remote (`--max-spool 256M`) |
+| `rship mkdir <TARGET>` | Idempotent directory creation |
+| `rship delete <TARGET>` | Delete filtered files while preserving directories (`--max-delete`, `--dry-run`) |
+| `rship purge <TARGET>` | Recursively remove all files and directories under prefix (`--max-delete`, `--dry-run`) |
+
+## Filtering Rules (Shared Across Transfer & Inspection)
+
+All filtering flags work consistently across `copy`, `sync`, `move`, `bisync`, `check`, `hashsum`, `size`, `tree`, and `delete`:
+
+```bash
+rship sync ./project r2:project \
+  --exclude '.git/' \
+  --exclude 'target/' \
+  --filter-from ./rules.txt \
+  --min-size 1K \
+  --max-size 2G \
+  --max-age 30d
+```
+
+Example `rules.txt` (first matching `+`/`-` rule wins; `#` and `;` lines are comments):
+
+```text
+# Include release notes even inside build artifacts
++ docs/**/*.md
+- **/*.tmp
+- node_modules/
++ **
+```
+
+## Durability, Auth & Configuration Commands
+
+| Command | Summary |
+| :--- | :--- |
+| `rship status [--limit 20] [--json]` | Inspect recent jobs and active resumable operations in SQLite |
+| `rship resume <JOB_ID>` | Resume a paused/failed job with all original persisted options |
+| `rship gc [--all]` | Garbage-collect stale local staging, S3 multipart, and GDrive resumable sessions |
+| `rship auth <provider> <remote> ...` | Authorize `gdrive`, `s3`, `dropbox`, `gcs`, `azureblob`, `onedrive`, `webdav`, `sftp`, `crypt` |
+| `rship auth export <remote>` / `import` | Portable `rship-remote-v1:` / `rship-auth-v1:` credential bundles for headless servers |
+| `rship auth keyring-migrate` | Move inline secrets in `config.toml` to OS Keyring (`keyring://rship/...`) |
+| `rship config path|show|profiles|test|rm|import-rclone` | Manage remotes & presets (`config profiles` lists `[defaults]` and `[profiles.*]`; `config show` redacts secrets by default) |
+| `rship completions <shell>` | Emit completions for `bash`, `zsh`, `fish`, `powershell`, or `elvish` |
+
+See [Configuration & Troubleshooting](/guide/troubleshooting) for the full annotated `config.toml` layout, `state/` directory contents, lock handling, and recovery recipes.

@@ -1,0 +1,78 @@
+---
+title: Adding a New Storage Provider
+description: 4-step recipe to implement a feature-gated StorageBackend inside rship-backends and pass the universal conformance suite.
+section: sdk
+---
+
+`rship` keeps its workspace permanently lean at **7 crates** while already shipping **10 built-in providers**. Adding a new storage backend never requires adding a workspace crate—implement one feature-gated module inside `rship-backends`, wire config/factory once in `rship`, and register a thin `ProviderAdapter` in `rship-cli`.
+
+## Core Invariants Every Provider Must Uphold
+
+1. **Low Memory (`<= 64 MiB` RSS)**: Stream directory entries over bounded `mpsc::channel(256)` (`EntryStream`), stream upload bodies directly without collecting large files into RAM, and return `DataSource::RemoteRangeReadable` from `open_read` for zero-RAM cloud-to-cloud relays.
+2. **Crash-Resumable Uploads**: Declare exact geometry in `Capabilities` (`UploadTopology::Sequential` or `ParallelParts`, `ChunkAlignment`, `single_shot_max_bytes`, `default_chunk_size`) and implement `begin_upload`, `query_upload`, `upload_chunk`, `finish_upload`, `abort_upload`, and `reconcile_operation`.
+3. **Reuse Shared Infrastructure**:
+   - `rship_transport::HttpTransport` (split H2/H1, `--proxy`, `--ca-cert`, stall watchdog, CUBIC limiter)
+   - `rship_transport::oauth` (`PkceSession`, `OAuth2TokenManager`, `FileTokenStore`)
+   - `rship_backends::common` (`rx_to_entry_stream`, `StrictBodyStream`, `ExactDownloadStream`, `common::http`, `common::crc`, `common::google_sa`, `common::xml`)
+   - `rship_core::rclone_ini` (INI parser + AES-256-CTR obscured secret decryption)
+
+## 4-Step Recipe to Add Provider `foo`
+
+### Step 1: Add Module `crates/rship-backends/src/foo/`
+
+```text
+crates/rship-backends/
+├── Cargo.toml                  # Feature `foo = [...]` + optional deps + `[[test]]`
+├── src/
+│   ├── lib.rs                  # `#[cfg(feature = "foo")] pub mod foo;`
+│   └── foo/
+│       ├── mod.rs              # Re-export FooBackend, FooConfig, parse_rclone_foo_conf
+│       ├── config.rs           # Typed config & chunk alignment constants
+│       ├── auth.rs             # Thin wrapper over `rship_transport::oauth` (if OAuth2)
+│       ├── backend.rs          # `impl StorageBackend for FooBackend`
+│       └── rclone_import.rs    # Optional `rclone.conf` parser
+└── tests/
+    └── foo_conformance.rs      # `required-features = ["foo"]`
+```
+
+### Step 2: Implement `StorageBackend` & Run the Universal Conformance Suite
+
+Implement mandatory identity, namespace (`stat`, `list_stream`, `mkdir`, `delete`, `compute_hash`, `open_read`), and resumable upload methods—plus optional high-value overrides (`delete_batch`, `can_server_side_copy_from`/`server_side_copy`, `about`, `rename`).
+
+Then verify all 9 universal invariants in `foo_conformance.rs` with a single call:
+
+```rust
+rship_core::conformance::run_backend_conformance(Arc::new(backend), clock).await;
+```
+
+```bash
+# Fast isolated test loop during development
+cargo test -p rship-backends --no-default-features --features foo
+```
+
+### Step 3: Wire Type, Config & Factory Once in `rship-core` & `crates/rship`
+
+Because `rship-cli`'s `CliRuntime` wraps `RshipClient` directly, wiring your provider once in `rship-core` and `crates/rship` unlocks both the Rust SDK (`RshipClient`) and `rship-cli` simultaneously:
+
+1. **`crates/rship-core/src/types.rs`**: Add `BackendKind::Foo` plus its `as_str()` and `parse()` arms.
+2. **`crates/rship/Cargo.toml`**: Add feature `foo = ["rship-backends/foo", "http"]` (omit `"http"` for non-HTTP backends) and add `"foo"` to `all-backends`.
+3. **`crates/rship/src/config.rs`**: Add `#[must_use] #[non_exhaustive] pub struct FooRemoteConfig` with `::new(...)` / fluent `with_*` builders, redacted `Debug`, `RemoteConfig::Foo(Box<FooRemoteConfig>)`, `From<FooRemoteConfig> for RemoteConfig`, and wire `kind()` + `visit_secrets` / `visit_secrets_mut` (single source of truth for redaction and OS Keyring lifecycle).
+4. **`crates/rship/src/lib.rs` & `prelude.rs`**: Re-export `FooRemoteConfig`.
+5. **`crates/rship/src/factory.rs`**: Handle `RemoteConfig::Foo` in `build_remote_backend`, `target_needs_transport` (if non-HTTP), and `import_rclone_conf*` if applicable.
+
+### Step 4: Register CLI Auth & Lifecycle in `rship-cli`
+
+1. **`crates/rship-cli/Cargo.toml`**: Add `backend-foo = ["rship/foo", "rship-backends/foo"]` to features and `all-backends`.
+2. **`crates/rship-cli/src/cli.rs`**: Add `FooAuthArgs` and `AuthAction::Foo(FooAuthArgs)`.
+3. **`crates/rship-cli/src/ops/config_ops.rs`**: Add summary, description, ordering, and aliases for `RemoteConfig::Foo`.
+4. **`crates/rship-cli/src/providers/foo.rs` + `providers/mod.rs`**: Implement `ProviderAdapter` (`kind`, `rclone_type`, optional `cleanup_secrets` for sidecar tokens, `abort_gc_operation` via `abort_gc_for_remotes`, `export_bundle`, `import_bundle`) + `handle_auth`, register `&foo::FooAdapter` in `registered_providers()`, and dispatch `AuthAction::Foo` in `dispatch_provider_auth`. Secret redaction and keyring migration work automatically via `RemoteConfig::visit_secrets*`.
+
+Once registered, every command (`copy`, `sync`, `move`, `bisync`, `check`, `hashsum`, `cat`, `rcat`, `about`, `tree`, `gc`, `config`, `auth export|import|keyring-migrate`, and `crypt` overlay remotes) works automatically.
+
+```bash
+# Verify full workspace, minimal SDK, and isolated CLI builds
+cargo clippy --workspace --all-targets -- -D warnings
+cargo check -p rship --no-default-features --features foo
+cargo clippy -p rship-cli --no-default-features --features backend-local,backend-foo -- -D warnings
+cargo test --workspace
+```

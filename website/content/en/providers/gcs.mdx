@@ -1,0 +1,72 @@
+---
+title: Google Cloud Storage (GCS)
+description: GCS JSON API v1 driver with Service Account RS256 JWT, OAuth2 PKCE, anonymous public buckets, 256 KiB resumable uploads, and rewrite copies.
+section: providers
+---
+
+The `gcs` backend (`backend-gcs`) targets Google Cloud Storage JSON API v1 with three authentication modes — **Service Account JSON (RS256 JWT)**, **Desktop OAuth 2.0 PKCE**, or **anonymous public bucket access** — plus custom endpoint routing for emulators like `fake-gcs-server`.
+
+## Setup Recipes
+
+<CodeTabs>
+<CodeTab label="Service Account (Recommended)">
+
+```bash
+rship auth gcs gcs-prod \
+  --bucket my-archive \
+  --prefix 2026/ \
+  --storage-class NEARLINE \
+  --service-account-file ./gcp-sa.json
+
+rship ls gcs-prod:
+```
+
+</CodeTab>
+<CodeTab label="OAuth2 PKCE / Public Bucket">
+
+```bash
+# Interactive Desktop PKCE login
+rship auth gcs gcs-personal \
+  --bucket my-bucket \
+  --client-id "<CLIENT_ID>" \
+  --client-secret "<CLIENT_SECRET>" \
+  --scope read_write
+
+# Anonymous access to public GCS buckets
+rship auth gcs gcp-public --bucket public-datasets --anonymous
+```
+
+</CodeTab>
+<CodeTab label="Local Emulator">
+
+```bash
+rship auth gcs gcs-dev \
+  --bucket test-bucket \
+  --endpoint http://127.0.0.1:4443 \
+  --anonymous
+```
+
+</CodeTab>
+</CodeTabs>
+
+## Flags Reference (`rship auth gcs`)
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | Logical remote name (e.g. `gcs`, `gcp-archive`) |
+| `--bucket` | Optional | Default bucket; omit to address buckets via `remote:bucket/path` |
+| `--prefix` | Empty | Object prefix inside the bucket |
+| `--project-number` | None | Optional Google Cloud project number |
+| `--storage-class` | Bucket default | `STANDARD`, `NEARLINE`, `COLDLINE`, or `ARCHIVE` |
+| `--service-account-file` | None | Path to GCP Service Account JSON key |
+| `--impersonate` | None | Domain-Wide Delegation impersonated subject (`sub`) |
+| `--client-id` / `--client-secret` | None | Google OAuth 2.0 Desktop credentials for PKCE flow |
+| `--scope` | `full` | Alias `full`, `read_write`, `read_only`, `cloud-platform`, or scope URL |
+| `--anonymous` | `false` | Access public buckets without credentials |
+| `--endpoint` | GCS default | Custom root URL (derives `/storage/v1` and `/upload/storage/v1`) |
+
+## Protocol Internals
+
+- **Chunk alignment & crash resume**: Files `<= 8 MiB` use single-shot `uploadType=multipart`; larger objects stream via `256 KiB`-aligned resumable upload sessions (`16 MiB` default chunk = `64 × 256 KiB`).
+- **Strict RFC 3986 path encoding**: Encodes `/`, `+`, `#`, `?`, `%`, spaces, and multi-byte UTF-8 segments accurately for GCS JSON `/b/{bucket}/o/{object}` routes.
+- **Checksums & server-side rewrite**: Verifies native `MD5` and `CRC32C` object hashes and uses GCS `rewriteTo` for instant intra-GCS copies.

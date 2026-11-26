@@ -1,0 +1,143 @@
+---
+title: Configuration & Troubleshooting
+description: Annotated config.toml schema, state directory layout, environment variables, ProcessLock behavior, proxy/TLS setup, and common recovery recipes.
+section: core
+---
+
+Inspect active configuration paths and state at any time with `rship config path`, `rship config show` (secrets are masked as `***REDACTED***` unless `--show-secrets` is passed), and `rship status`.
+
+## `config.toml` Layout
+
+`rship` writes declarative TOML configuration atomically with `0600` file permissions (`0700` parent directory) on Unix:
+
+```toml
+[defaults]
+transfers = 4
+part_concurrency = 4
+adaptive = true
+exclude = [".git/", ".DS_Store"]
+
+[profiles.nightly]
+bwlimit = "08:00,10M 23:00,off"
+max_delete = "25%"
+exclude = ["target/", "*.tmp"]
+
+[remotes.r2]
+type = "s3"
+provider = "r2"
+bucket = "my-backups"
+region = "auto"
+endpoint = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+access_key_id = "<ACCESS_KEY>"
+secret_access_key = "keyring://rship/s3.r2.secret_access_key"
+
+[remotes.gdrive]
+type = "gdrive"
+client_id = "<CLIENT_ID>.apps.googleusercontent.com"
+client_secret = "keyring://rship/gdrive.gdrive.client_secret"
+use_changes_feed = true
+stop_on_upload_limit = true
+
+[remotes.vps]
+type = "sftp"
+host = "10.0.0.5"
+port = 22
+user = "deploy"
+key_file = "/home/alice/.ssh/id_ed25519"
+host_key_policy = "accept-new"
+
+[remotes.vault]
+type = "crypt"
+remote = "r2:encrypted-vault"
+password = "keyring://rship/crypt.vault.password"
+filename_encryption = "standard"
+```
+
+Supported `[remotes.<alias>]` `type` values are `"local"`, `"gdrive"`, `"s3"`, `"onedrive"`, `"webdav"`, `"sftp"`, `"dropbox"`, `"gcs"`, `"azureblob"`, and `"crypt"`.
+
+## State Directory Layout
+
+By default, `rship` resolves OS-standard application directories (`ProjectDirs::from("dev", "rship", "rship")`, overridable via `--config` / `RSHIP_CONFIG` and `--state-dir` / `RSHIP_STATE_DIR`):
+
+| Entry inside `state_dir` | Purpose |
+| :--- | :--- |
+| `state.db` (`-wal`, `-shm`) | WAL-mode SQLite persistence storing job history, `Intent` records, resumable upload URIs/ETags, `bisync` baselines (`sync_baseline`), and Google Drive `changes.list` inventory caches. |
+| `locks/<sha256_prefix>.lock` | Exclusive non-blocking advisory `ProcessLock` files scoped per destination target so concurrent `rship` invocations cannot corrupt shared destinations or multipart state. |
+| `runs/` | Ephemeral per-run `sync-<job_id>.db` (`SqliteSyncIndex`) databases and `--strict-source` private file snapshots (cleaned up when runs finish). |
+| `tokens/` | OAuth2 access/refresh token JSON files (`<remote>.json`, `<remote>.dropbox.json`, `<remote>.gcs.json`, `<remote>.onedrive.json`) and extracted Service Account JSON keys (`0600`). |
+
+## Environment Variables
+
+Every common runtime flag can also be supplied via environment variables in systemd units, CI runners, or Docker containers:
+
+| Variable | Equivalent Flag | Description |
+| :--- | :--- | :--- |
+| `RSHIP_PROFILE` | `-p, --profile <NAME>` | Default `[profiles.<NAME>]` preset to apply |
+| `RSHIP_CONFIG` | `--config <PATH>` | Override path to `config.toml` |
+| `RSHIP_STATE_DIR` | `--state-dir <PATH>` | Override state directory (`state.db`, `locks/`, `runs/`, `tokens/`) |
+| `RSHIP_CA_CERT` | `--ca-cert <PATH>` | Custom PEM CA certificate bundle for corporate/proxy TLS roots |
+| `RSHIP_PROXY` | `--proxy <URL>` | Proxy (`http://`, `https://`, `socks5://`, `socks5h://`) for Control & Data Planes |
+| `RSHIP_TPSLIMIT` | `--tpslimit <N>` | Proactive global API requests-per-second ceiling |
+| `RSHIP_DRIVE_STOP_ON_UPLOAD_LIMIT` | `--drive-stop-on-upload-limit` | Fail fast with `QuotaExceeded` on Google Drive 750 GiB/day cap |
+| `RSHIP_LOW_LEVEL_RETRIES` | `--low-level-retries <N>` | Per-HTTP-request retry ceiling on cloud backends |
+| `NO_COLOR` / `CLICOLOR_FORCE` | — | Control ANSI color emission (`TERM=dumb` also disables colors) |
+
+## Common Issues & Recovery
+
+### 1. Exclusive ProcessLock Contention
+
+**Symptom**: `another rship process already holds exclusive lock ...`
+
+- `rship` acquires an advisory exclusive lock (`LockFileEx` on Windows, `File::try_lock` on Unix) keyed by destination identity before mutating a target.
+- Inspect active or paused jobs with `rship status`. Under overlapping cron schedules, wrap your cron invocation with `flock -n` or wait for the previous run to finish.
+- Pass `--no-lock` **only** when an external coordinator guarantees strictly serialized access to the same destination.
+
+### 2. Corporate Proxies & Self-Signed TLS Certificates
+
+**Symptom**: TLS certificate errors or connection timeouts behind a proxy / SSL-inspecting firewall.
+
+```bash
+rship --proxy http://proxy.corp.internal:8080 \
+  --ca-cert /etc/ssl/certs/corp-root-ca.pem \
+  config test r2
+```
+
+For SOCKS5 with remote DNS resolution (recommended on jump hosts), use `socks5h://127.0.0.1:1080`.
+
+### 3. Google Drive 7-Day Token Expiry or 750 GiB/day Quota
+
+- **7-day `invalid_grant` expiry**: Google Cloud projects left in **Testing** mode expire desktop refresh tokens after 7 days. Publish your OAuth app to *In production* (external personal accounts) or *Internal* (Workspace), or use a Service Account; see [Google Drive OAuth 2.0 Setup](/providers/gdrive#oauth-20-setup).
+- **750 GiB/day upload cap**: Pass `--drive-stop-on-upload-limit` so `403 userRateLimitExceeded` fails fast with `QuotaExceeded` instead of stalling on exponential retries.
+
+### 4. Cleaning Up Stale Multipart / Staging Sessions
+
+Interrupted uploads preserve multipart / resumable sessions so `rship resume <job_id>` can pick up cleanly. If you intentionally abandon older paused jobs and want to abort dangling cloud multipart uploads or `.rship.part.*` local staging files:
+
+```bash
+# Inspect active/paused jobs first
+rship status
+
+# Abort abandoned sessions tracked in state.db (--all clears all active records)
+rship gc
+rship gc --all
+```
+
+### 5. Running Inside Containers Without an OS Keyring
+
+Docker and minimal Linux containers rarely run D-Bus Secret Service. Do not run `rship auth keyring-migrate` inside headless containers; instead, authorize on a workstation and copy an exported bundle with `rship auth export <remote>` / `rship auth import`. See [Headless VPS, Docker & Keyring](/guide/deployment) for copy-paste workflows.
+
+### 6. Windows Long Paths (`> 260` Characters) & Reserved Names
+
+On Windows, `rship` automatically converts local filesystem paths to extended `\\?\` / `\\?\UNC\` verbatim paths after applying bijective `EncodingLayer` normalization, so deeply nested paths and trailing dots/spaces work without manual registry edits.
+
+## Reporting an Issue
+
+When opening a [GitHub Issue](https://github.com/hua0512/rship/issues), attach safe diagnostic context (secrets are redacted automatically by `rship config show`):
+
+```bash
+rship --version
+rship config show
+rship status --json
+# Reproduce with verbose HTTP/engine tracing on stderr
+rship -vv copy <SRC> <DST> --dry-run
+```

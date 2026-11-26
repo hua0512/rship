@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+*.pdb
+.DS_Store
+Thumbs.db
+*.db
+*.db-wal
+*.db-shm
+.rship/
+website/node_modules/
+website/public/
+website/dist/
+website/dist-ssr/
+website/src/generated/

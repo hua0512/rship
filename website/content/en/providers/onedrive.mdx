@@ -1,0 +1,57 @@
+---
+title: OneDrive & SharePoint
+description: Microsoft Graph v1.0 driver for personal OneDrive, OneDrive for Business, and SharePoint document libraries with 320 KiB upload sessions.
+section: providers
+---
+
+The `onedrive` backend (`backend-onedrive`) targets Microsoft Graph API v1.0 cleanly across **personal Microsoft accounts**, **OneDrive for Business**, and **SharePoint Document Libraries** (`--drive-id`), using Entra ID OAuth 2.0 Desktop PKCE loopback.
+
+## Setup Recipes
+
+<CodeTabs>
+<CodeTab label="Personal / Business OneDrive">
+
+```bash
+# Requests Files.ReadWrite.All offline_access User.Read via loopback PKCE
+rship auth onedrive od \
+  --client-id "<AZURE_APPLICATION_CLIENT_ID>"
+
+rship about od:
+```
+
+</CodeTab>
+<CodeTab label="SharePoint Document Library">
+
+```bash
+# Target a specific Microsoft Graph Drive ID
+rship auth onedrive sp-docs \
+  --client-id "<AZURE_APPLICATION_CLIENT_ID>" \
+  --drive-id "b!Xyz123..."
+
+rship ls sp-docs:
+```
+
+</CodeTab>
+</CodeTabs>
+
+## Flags Reference (`rship auth onedrive`)
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | Logical remote name (e.g. `onedrive`, `sp-docs`) |
+| `--client-id` | Interactive prompt | Azure App Registration (Entra ID) Application `client_id` |
+| `--client-secret` | None | Optional client secret (omit for public Mobile/Desktop PKCE app registrations) |
+| `--drive-id` | `/me/drive` | Explicit Microsoft Graph `drive_id` for SharePoint libraries |
+| `--scope` | `Files.ReadWrite.All offline_access User.Read` | Custom Graph OAuth scope string |
+| `--access-token` | None | Direct Graph bearer token for non-interactive automation |
+
+<Callout type="info" title="Entra ID Redirect URI">
+When registering your Azure app under **Authentication → Mobile and desktop applications**, add `http://localhost` (or loopback redirect support) so Desktop PKCE works seamlessly on Linux, macOS, and Windows.
+</Callout>
+
+## Protocol Internals
+
+- **Strict 320 KiB upload-session geometry**: Files `<= 4 MiB` upload directly; larger files create Graph upload sessions streaming `10 MiB` (`32 × 320 KiB`) aligned fragments (Graph hard ceiling `60 MiB` per request).
+- **`nextExpectedRanges` crash-resume**: Queries active upload session URLs directly via Graph and resumes precisely at the server's reported `nextExpectedRanges` byte offset.
+- **Async server-side copy**: Same-drive copies dispatch Microsoft Graph's async copy endpoint and poll the monitor URL until committed.
+- **rclone migration**: Existing OneDrive remotes (`token`, `drive_id`, `drive_type`, `client_id`, `client_secret`) import with `rship config import-rclone`.

@@ -1,0 +1,37 @@
+[package]
+name = "rship-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Zero-I/O transfer engine, three-tree bisync planner, failover pool, and StorageBackend contracts for rship"
+
+[features]
+default = []
+test-utils = []
+
+[dependencies]
+aes.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+ctr.workspace = true
+futures.workspace = true
+globset.workspace = true
+hex.workspace = true
+jiff.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
+
+[lints]
+workspace = true

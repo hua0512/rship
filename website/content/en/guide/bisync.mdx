@@ -1,0 +1,81 @@
+---
+title: Bidirectional Sync (Bisync)
+description: Three-Tree bidirectional synchronization with SQLite sync_baseline, zero-data-loss conflict strategies, and crash-safe recovery.
+section: core
+---
+
+`rship bisync` synchronizes changes in **both directions** between two locations (`A` and `B`) without silently overwriting concurrent edits or misinterpreting remote deletions.
+
+## The Three-Tree Model
+
+Most naive two-way sync tools compare only side `A` against side `B`, making it impossible to tell whether a file missing from `B` was **newly created on `A`** or **deleted on `B`**.
+
+`rship` implements the **Unison / Dropbox Canopy Three-Tree model** backed by SQLite WAL persistence:
+
+1. **Tree A** — Current observed snapshot of `path_a` loaded into the ephemeral disk-backed `SqliteSyncIndex`.
+2. **Tree B** — Current observed snapshot of `path_b` loaded concurrently into the same bounded index.
+3. **Merge-Base O** — The dual-side `sync_baseline` table stored in `state.db`, recording the last agreed state of both sides after a successful run.
+
+Because `rship` retains baseline fingerprints for both sides, it also eliminates false diffs on object stores like S3 where `LastModified` reflects upload time rather than source mtime.
+
+## Initial Bootstrap (`--resync`)
+
+When syncing two existing non-empty directories for the first time (with no prior `sync_baseline` for that pair), pass `--resync` so `rship` safely merges the union instead of inferring deletions from an empty baseline:
+
+```bash
+# 1. Preview planned actions on the first bootstrap run without modifying either side
+rship bisync ./notes gdrive:notes --resync --dry-run
+
+# 2. Establish the baseline and converge both sides cleanly
+rship bisync ./notes gdrive:notes --resync
+
+# 3. Subsequent runs automatically diff against the persisted Merge-Base O
+rship bisync ./notes gdrive:notes
+```
+
+<Callout type="tip" title="Safe Dry-Run Verification">
+Add `--dry-run` before `--resync` (or after changing filter rules) to inspect planned transfers, conflict renames, and deletions before any remote mutation runs.
+</Callout>
+
+## Conflict Strategies (`--conflict-strategy`)
+
+When both `A` and `B` have modified, diverged from Merge-Base `O`, or hit edit-vs-delete divergence, `rship` applies the configured `--conflict-strategy`:
+
+| Strategy | Aliases | Behavior on Divergence |
+| :--- | :--- | :--- |
+| `keep-both` *(default)* | `keep_both`, `both` | Keeps Side A at the canonical path and writes Side B's conflicting version to `<stem>.conflict-<ts>.<ext>` on both sides (**zero data loss**). |
+| `abort` | `none`, `skip` | Unison strict mode: leaves both sides untouched and records an explicit `SyncConflict` for manual resolution. |
+| `prefer-a` | `prefer_a`, `a` | Side A overwrites Side B on conflicting paths. |
+| `prefer-b` | `prefer_b`, `b` | Side B overwrites Side A on conflicting paths. |
+
+```bash
+# Default zero-loss behavior (explicitly specified for clarity in cron jobs)
+rship bisync ./workspace dropbox:workspace --conflict-strategy keep-both
+
+# Strict Unison mode for regulated or code directories where manual merge is preferred
+rship bisync ./contracts s3:bucket/contracts --conflict-strategy abort
+```
+
+## Built-In Safety Guarantees
+
+- **File vs. Directory Type Flips**: If a regular file on one side becomes a directory on the other, `rship` always surfaces an explicit conflict rather than wiping a subtree to replace it.
+- **Observation Completeness Gate**: If directory listing or scanning fails partway on **either** side `A` or side `B`, `rship` automatically disables **all deletions on both sides** for that run.
+- **Overlapping Root Rejection**: Passing overlapping or nested local directories (for example `./repo` and `./repo/docs`) is rejected up front before planning starts.
+- **NFC & Case Collision Detection**: Using non-unique `nfc_path` and case-folded indexes, mixed-case or macOS NFD/NFC sibling collisions are flagged before either tree can silently overwrite the other.
+- **Unified Filters & Delete Circuit Breaker**: Shared `--exclude`, `--filter-from`, `--min-size`, `--max-size`, `--max-age`, `--bwlimit`, `--max-buffer-mem`, and `--max-delete` flags work identically to `rship sync`:
+
+```bash
+rship bisync ./projects nextcloud:projects \
+  --exclude 'node_modules/' \
+  --exclude '.git/' \
+  --max-delete 50 \
+  --bwlimit 20M
+```
+
+<Callout type="warning" title="Per-Pair Baseline Isolation">
+Baselines are keyed by the canonical `(side_a, side_b)` pair identity inside `state.db`. Keep `--state-dir` writable across runs (see [Headless VPS, Docker & Keyring](/guide/deployment)); deleting `state.db` resets the merge-base and requires re-bootstrapping with `--resync`.
+</Callout>
+
+## Interruption & Crash Recovery
+
+Every `bisync` run tracks job progress and checkpointed multi-part uploads in `state.db` (SQLite WAL). If a run is interrupted by `Ctrl+C`, `SIGTERM`, or power loss, re-running `rship bisync` (or `rship status` to inspect recent jobs) recovers in-flight multipart uploads and cleanly re-evaluates remaining paths against committed baseline records.

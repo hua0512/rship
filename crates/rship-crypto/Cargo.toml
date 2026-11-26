@@ -1,0 +1,36 @@
+[package]
+name = "rship-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Zero-knowledge seekable STREAM OAE2 (XChaCha20-Poly1305) client-side encryption overlay for rship"
+
+[dependencies]
+argon2.workspace = true
+async-trait.workspace = true
+aws-lc-rs.workspace = true
+bytes.workspace = true
+futures.workspace = true
+hex.workspace = true
+hkdf.workspace = true
+rand.workspace = true
+rship-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+chacha20poly1305.workspace = true
+rship-backends = { workspace = true, default-features = false, features = ["local"] }
+rship-core = { version = "0.1.0", path = "../rship-core", features = ["test-utils"] }
+rship-state.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

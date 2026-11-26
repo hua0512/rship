@@ -1,0 +1,63 @@
+---
+title: Client-Side Encryption (OAE2)
+description: Zero-knowledge, hardware-accelerated XChaCha20-Poly1305 encryption overlay with deterministic SIV filenames and seekable 64 KiB range decryption.
+section: core
+---
+
+`rship-crypto` implements a **zero-knowledge, `#![forbid(unsafe_code)]`, seekable encryption overlay** that transparently wraps any local or cloud backend.
+
+## Interactive Byte-Range X-Ray
+
+Because STREAM OAE2 divides files into independent **64 KiB** authenticated blocks, `rship cat` can seek directly to any offset inside a multi-gigabyte encrypted archive over HTTP `Range` requests—fetching only the required chunks:
+
+<Oae2Xray />
+
+## Cryptographic Design
+
+- **Authenticated Encryption**: 64 KiB seekable **STREAM OAE2** blocks using **`XChaCha20-Poly1305`** (192-bit nonce, 128-bit Poly1305 authentication tag per block).
+- **Hardware Acceleration**: Powered by `aws-lc-rs` (AVX2/NEON) with once-per-file `HChaCha20` subkey derivation and zero-allocation in-place AEAD processing.
+- **Key Derivation & Memory Hygiene**: Passphrases derive master keys via **Argon2id + HKDF-SHA256**, with automatic memory scrubbing via `zeroize`.
+- **Filename Encryption**: Deterministic base32 **SIV filename encryption** (`--filename-encryption standard`, or `off` to preserve plaintext names).
+- **Parallel Multi-Part Encrypted Writes**: Achieves **1,214 MiB/s** on local OAE2 NVMe encryption at **52.9 MiB RSS** (**4.07× faster** and **1.5× lower RAM** than `rclone crypt`), and **up to 12.1 MiB/s upload / 26.2 MiB/s 4-part download** on 1 Gbps Google Drive (**1.35–1.95× faster** with **up to 3.1× lower RSS**).
+
+## Setup a Vault Over Any Backend
+
+```bash
+# Wrap a Cloudflare R2 prefix with passphrase-derived Argon2id keys
+rship auth crypt vault \
+  --target r2:encrypted-vault \
+  --password "strong-passphrase"
+
+# Or supply an explicit 256-bit hex master key (64 hex chars)
+rship auth crypt vault-hex \
+  --target gdrive:vault \
+  --key-hex "<64-HEX-CHARS>" \
+  --filename-encryption standard
+
+# Migrate the passphrase/key into your OS Keyring
+rship auth keyring-migrate
+```
+
+## Streaming Backup & Seekable Range Decryption
+
+```bash
+# Encrypt a directory on the fly into your cloud vault
+rship copy ./secrets vault:2026 --tui
+
+# Stream stdin directly into an encrypted cloud archive
+tar -cf - ./docs | rship rcat vault:backups/docs.tar
+
+# Decrypt only 4 KiB starting at byte offset 1 MiB directly to stdout
+rship cat vault:backups/docs.tar --offset 1048576 --count 4096 | xxd
+
+# Inspect decrypted directory tree and verify sizes
+rship tree vault: -s -L 3
+```
+
+<Callout type="info" title="Compatibility with rclone crypt">
+Because STREAM OAE2 (`XChaCha20-Poly1305` + SIV filenames) enables hardware-accelerated byte-range seeks and chunk-reordering authentication, it is **not wire-compatible with `rclone crypt`** (`XSalsa20-Poly1305` + EME). See [Migrating from rclone](/guide/migration) before reusing an existing encrypted bucket.
+</Callout>
+
+<Callout type="warning" title="Keep Your Passphrase & Salt Safe">
+`rship` performs all encryption locally and never transmits your passphrase, salt, or master key to any cloud provider. If you lose both your passphrase/key and your config backup, encrypted files cannot be recovered.
+</Callout>

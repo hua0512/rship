@@ -1,0 +1,94 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/rship-core",
+    "crates/rship-state",
+    "crates/rship-transport",
+    "crates/rship-crypto",
+    "crates/rship-backends",
+    "crates/rship",
+    "crates/rship-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/hua0512/rship"
+homepage = "https://hua0512.github.io/rship/"
+
+[workspace.dependencies]
+aes = "0.9"
+anyhow = "1.0"
+argon2 = "0.6"
+async-trait = "0.1"
+aws-lc-rs = { version = "1.19", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
+axum = "0.8"
+base64 = "0.23"
+bytes = "1.12"
+chacha20poly1305 = "0.11"
+clap = { version = "4.6", features = ["derive", "env"] }
+clap_complete = "4.6"
+ctr = "0.10"
+directories = "6.0"
+futures = "0.3"
+globset = "0.4"
+hex = "0.4"
+hkdf = "0.13"
+http = "1.5"
+# Local-zone lookup: `tz-system` reads TZ or /etc/localtime at runtime (works on static musl);
+# `tzdb-zoneinfo` resolves IANA names from /usr/share/zoneinfo; `tzdb-bundle-platform` embeds
+# the tzdb only on Windows, which has no system copy.
+jiff = { version = "1.0.3", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
+keyring = "4.2"
+libc = "0.2"
+md-5 = "0.11"
+mimalloc = { version = "0.1", default-features = false, features = ["no_thp"] }
+proptest = "1.12"
+quick-xml = "0.42"
+rand = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["http2", "rustls", "stream", "json", "form", "query", "gzip", "socks", "system-proxy"] }
+rsa = { version = "0.10", features = ["pkcs1v15", "encoding"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
+russh = { version = "0.65", default-features = false, features = ["aws-lc-rs", "flate2", "rsa"] }
+russh-sftp = "4.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+tempfile = "3.27"
+thiserror = "2.0"
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "fs", "io-util", "net", "sync", "time", "signal"] }
+toml = "1.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+unicode-normalization = "0.1"
+url = "2.5"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+zeroize = "1.9"
+
+rship-core = { version = "0.1.0", path = "crates/rship-core" }
+rship-crypto = { version = "0.1.0", path = "crates/rship-crypto" }
+rship-state = { version = "0.1.0", path = "crates/rship-state" }
+rship-transport = { version = "0.1.0", path = "crates/rship-transport" }
+rship-backends = { version = "0.1.0", path = "crates/rship-backends", default-features = false }
+rship = { version = "0.1.0", path = "crates/rship", default-features = false }
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

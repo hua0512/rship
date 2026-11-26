@@ -1,0 +1,81 @@
+---
+title: 双向同步 (Bisync)
+description: 基于 SQLite sync_baseline 的三树双向同步模型，内置零数据丢失冲突策略与崩溃安全恢复。
+section: core
+---
+
+`rship bisync` 在两端路径（`A` 与 `B`）之间**双向**同步变更，不会静默覆盖并发修改，也不会误判远端删除。
+
+## 三树模型
+
+大多数朴素的双向同步工具只比对 `A` 端与 `B` 端，当某个文件只在 `A` 端存在而 `B` 端缺失时，无法区分它是**在 `A` 端新建**还是**在 `B` 端删除**。
+
+`rship` 实现了由 SQLite WAL 持久化支撑的 **Unison / Dropbox Canopy 三树模型**：
+
+1. **Tree A** — `path_a` 当前扫描快照，加载至临时落盘索引 `SqliteSyncIndex`。
+2. **Tree B** — `path_b` 当前扫描快照，并发加载至同一有界索引。
+3. **Merge-Base O** — 存于 `state.db` 中的双端 `sync_baseline` 表，记录上次成功同步后两端达成一致的状态。
+
+由于同时保留两端基线指纹，面对 S3 等 `LastModified` 记录上传时间而非源文件 mtime 的对象存储，也能消除误报差异。
+
+## 首次引导（`--resync`）
+
+首次同步两个已存在非空目录（尚无该配对的 `sync_baseline` 记录）时，需传入 `--resync`，让 `rship` 安全合并两端并集，避免将空基线误判为全量删除：
+
+```bash
+# 1. 首次引导前先演练计划动作，不修改两端任何文件
+rship bisync ./notes gdrive:notes --resync --dry-run
+
+# 2. 建立基线并将两端收敛一致
+rship bisync ./notes gdrive:notes --resync
+
+# 3. 后续运行自动基于持久化的 Merge-Base O 计算差异
+rship bisync ./notes gdrive:notes
+```
+
+<Callout type="tip" title="先用 Dry-Run 核对计划">
+在执行 `--resync` 前（或修改过滤规则后），先加上 `--dry-run` 检查计划中的传输、冲突重命名与删除动作，确认无误再实际写入远端。
+</Callout>
+
+## 冲突策略（`--conflict-strategy`）
+
+当 `A`、`B` 两端相对 Merge-Base `O` 同时发生修改、内容分叉，或出现“一端修改、另一端删除”时，`rship` 按 `--conflict-strategy` 处理：
+
+| 策略 | 别名 | 分叉时行为 |
+| :--- | :--- | :--- |
+| `keep-both` *（默认）* | `keep_both`、`both` | 在原路径保留 A 端文件，并将 B 端冲突版本以 `<stem>.conflict-<ts>.<ext>` 写入两端（**零数据丢失**）。 |
+| `abort` | `none`、`skip` | Unison 严格模式：两端均保持不动，并记录显式 `SyncConflict` 交由人工处理。 |
+| `prefer-a` | `prefer_a`、`a` | 冲突路径一律以 A 端覆盖 B 端。 |
+| `prefer-b` | `prefer_b`、`b` | 冲突路径一律以 B 端覆盖 A 端。 |
+
+```bash
+# 默认零丢失策略（在 cron 脚本中显式写明便于审阅）
+rship bisync ./workspace dropbox:workspace --conflict-strategy keep-both
+
+# Unison 严格模式：适合代码仓库或合规目录，交由人工合并
+rship bisync ./contracts s3:bucket/contracts --conflict-strategy abort
+```
+
+## 内置安全保障
+
+- **文件与目录类型翻转**：若一端的普通文件在另一端变成了目录，`rship` 必定报出显式冲突，绝不会清空子树强行替换。
+- **Observation Completeness Gate**：若 `A` 或 `B` **任一端**在列举目录或扫描中途失败，`rship` 会自动禁用本次运行**两端的全部删除操作**。
+- **重叠根目录拦截**：传入相互嵌套或重叠的本地目录（例如 `./repo` 与 `./repo/docs`）会在规划阶段前直接报错拒绝。
+- **NFC 与大小写冲突检测**：借助非唯一 `nfc_path` 与大小写折叠索引，在两端互覆前即标记混用大小写或 macOS NFD/NFC 同级冲突。
+- **统一过滤与删除熔断**：`--exclude`、`--filter-from`、`--min-size`、`--max-size`、`--max-age`、`--bwlimit`、`--max-buffer-mem` 与 `--max-delete` 参数行为与 `rship sync` 完全一致：
+
+```bash
+rship bisync ./projects nextcloud:projects \
+  --exclude 'node_modules/' \
+  --exclude '.git/' \
+  --max-delete 50 \
+  --bwlimit 20M
+```
+
+<Callout type="warning" title="按同步对隔离基线">
+基线在 `state.db` 中以规范化的 `(side_a, side_b)` 配对标识为键。请保证 `--state-dir` 在多次运行间持久可写（参阅[无头 VPS、Docker 与密钥环](/guide/deployment)）；删除 `state.db` 会重置合并基线，之后必须重新执行 `--resync` 引导。
+</Callout>
+
+## 中断与崩溃恢复
+
+每次 `bisync` 运行都会在 `state.db`（SQLite WAL）中记录作业进度与多段上传检查点。若进程因 `Ctrl+C`、`SIGTERM` 或断电中断，重新执行 `rship bisync`（或先用 `rship status` 查看近期作业）即可续传未完成的分片上传，并基于已提交的基线记录重新评估剩余路径。

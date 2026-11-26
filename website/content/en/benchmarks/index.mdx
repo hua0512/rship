@@ -1,0 +1,62 @@
+---
+title: Benchmarks & Acceptance Tests
+description: Head-to-head RSS and throughput comparisons against rclone on 1 Gbps Linux VPS (live Google Drive) and Windows 11 NVMe, plus an interactive VPS memory cliff lab.
+section: performance
+---
+
+Measured head-to-head with MD5 bit-exact verification across two environments using the default **`rship 0.1.0`** release build (tuned `mimalloc` v3 with `no_thp` and bounded `2..=8` Tokio workers — **every workload strictly under 64 MiB RSS**):
+
+- **1 Gbps Linux VPS (Live Google Drive)**: Debian 13 · 4 vCPU AMD EPYC · RAM-backed `tmpfs` (zero disk bottleneck) · exact Linux kernel `wait4` `ru_maxrss` — **`rship 0.1.0`** vs **`rclone v1.60.1-DEV`** hitting the same Google Drive account.
+- **Local Windows 11 NVMe**: alternating-order rounds · Win32 `PeakWorkingSetSize` — **`rship 0.1.0`** vs **`rclone v1.76.0`**.
+
+## VPS Memory Cliff Simulator
+
+Select a VPS container RAM budget (`128 MiB`, `256 MiB`, `512 MiB`) and switch between peak RSS and throughput across live 1 Gbps Google Drive and local NVMe workloads:
+
+<VpsMemoryLab />
+
+## Live Google Drive (1 Gbps Linux VPS)
+
+| Workload | `rship 0.1.0` (tuned `mimalloc`) | `rclone v1.60.1-DEV` | Advantage |
+| :--- | :--- | :--- | :--- |
+| **128 MiB Single Upload** | **Up to 27.6 MiB/s** · **29.4 MiB RSS** | `17.9 MiB/s` · `75.8 MiB` (default 8M)<br />`23.2 MiB/s` · `132.5 MiB` (`--drive-chunk-size 64M`) | **Up to 1.54× faster · 2.6–4.5× lower RSS** |
+| **128 MiB 4-Stream Download** | **Up to 77.1 MiB/s** (~647 Mbps) · **31.6 MiB RSS** | `14.5–21.1 MiB/s` · `55.6–59.6 MiB` (`--multi-thread-streams 4`) | **Up to 3.66× faster · 1.8× lower RSS · MD5 exact** |
+| **4 × 64 MiB Parallel Upload (`--transfers 4`)** | **Up to 32.1 MiB/s** · **54.8 MiB RSS** | `27.9 MiB/s` · `149.4 MiB` (default 8M)<br />`28.9 MiB/s` · `374.5 MiB` (`--drive-chunk-size 64M`) | **2.7–6.8× lower RSS · strictly `< 64 MiB`** |
+| **64 MiB Crypt Upload (STREAM OAE2)** | **11.2–12.1 MiB/s** · **47.1 MiB RSS** | `7.6–8.3 MiB/s` · `147.9 MiB` (`64M`) | **1.35–1.58× faster · 3.1× lower RSS** |
+| **64 MiB Crypt Download (4-Part OAE2)** | **13.0–26.2 MiB/s** · **45.5 MiB RSS** | `9.5–13.4 MiB/s` · `70.8 MiB` | **1.37–1.95× faster · 1.6× lower RSS · MD5 exact** |
+| **Warm Sync (`changes.list` incremental)** | **285–304 ms** · **31.1 MiB RSS** | `1,239–1,305 ms` · `52.7 MiB` | **4.1–4.6× faster · 1.7× lower RSS** |
+| **16 MiB Crash-Resume** | `SIGKILL` @ 4.0 MiB → resumed **bit-exact** | — | **Zero duplicate files** |
+
+## Local Windows 11 NVMe & Scale Acceptance
+
+| Workload | `rship 0.1.0` (tuned `mimalloc`) | `rclone v1.76.0` | Advantage |
+| :--- | :--- | :--- | :--- |
+| **Local 1 GiB Copy (NVMe)** | **905 ms** (`1,131 MiB/s`) · **17.5 MiB RSS** | `1,323 ms` (`774 MiB/s`) · `64.7 MiB RSS` | **1.46× faster · 3.7× lower RSS** |
+| **Local 1 GiB Hardware `hashsum crc32c`** | **230 ms** (`4,448 MiB/s`) · **14.6 MiB RSS** | `306 ms` (`3,350 MiB/s`) · `46.7 MiB RSS` | **1.33× faster · 3.2× lower RSS** |
+| **Local 1 GiB Crypt (STREAM OAE2)** | **844 ms** (`1,214 MiB/s`) · **52.9 MiB RSS** (decrypt `1,100 MiB/s` · `63.1 MiB`) | `3,436 ms` (`298 MiB/s`) · `79.7 MiB RSS` | **4.07× faster · 1.5× lower RSS** |
+| **Local 5,000 × 2 KiB Copy (`--transfers 16`)** | **1,435 ms** · **26.7 MiB RSS** | `2,205 ms` · `61.8 MiB RSS` | **1.54× faster · 2.3× lower RSS** |
+| **Local 5,000-File Warm Sync** | **27.6 ms** · **26.3 MiB RSS** | `132.0 ms` · `65.8 MiB RSS` | **4.78× faster · 2.5× lower RSS** |
+| **Local 5,000-File Warm Bisync (`--transfers 16`)** | **42.5 ms** · **25.3 MiB RSS** | `206.9 ms` · `58.9 MiB RSS` | **4.87× faster · 2.3× lower RSS** |
+| **Local 5,000-File Check (`--checkers 8`)** | **215 ms** · **23.5 MiB RSS** | `318 ms` · `67.3 MiB RSS` | **1.48× faster · 2.9× lower RSS** |
+| **Local 5,000-File Read-Only `ls -r` (Lazy)** | **23.7 ms** · **15.5 MiB RSS** (zero SQLite DB created) | `103.4 ms` · `51.1 MiB RSS` | **4.36× faster · 3.3× lower RSS** |
+| **1,000,000-Row Sync Diff (`SqliteSyncIndex`)** | **1.55 s** (release) · **25.2 MiB RSS** | — | **`~39%` of 64 MiB cap (`16.6 MiB` sys alloc)** |
+
+<Callout type="info" title="How rship Keeps mimalloc Strictly Under 64 MiB RSS">
+`rship-cli` enables `mimalloc` v3 with `no_thp` (64 KiB Linux purge granularity instead of 2 MiB THP), configures low-RSS defaults at startup (`arena_eager_commit=0`, `purge_decommits=1`, `purge_delay=10ms`, `arena_purge_mult=2`, `page_reclaim_on_free=1` — all overridable via `MIMALLOC_*` env vars), bounds Tokio async workers to `2..=8` with fast blocking-thread reclaim, and caps off-pool local writer queues to 3 frames. You can also build with `--no-default-features --features all-backends` to use the platform system allocator.
+</Callout>
+
+## Reproduce Locally
+
+```bash
+# Standard quantitative suite (16-concurrency RSS <= 64 MiB, 100k-row SQLite RSS, 10 GiB GDrive plan)
+cargo test --release -p rship-cli --test acceptance_benchmarks -- --nocapture
+
+# Full 1,000,000-row (500k src + 500k dst) SQLite SyncIndex RSS verification (default tuned mimalloc)
+cargo test --release -p rship-cli --test acceptance_benchmarks \
+  acceptance_sqlite_sync_index_1m_rows_rss_under_64mib -- --ignored --nocapture
+
+# Compare against the platform system allocator
+cargo test --release -p rship-cli --no-default-features --features all-backends \
+  --test acceptance_benchmarks \
+  acceptance_sqlite_sync_index_1m_rows_rss_under_64mib -- --ignored --nocapture
+```

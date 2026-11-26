@@ -1,0 +1,224 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+  # Keep file:line backtraces for test failures while avoiding full debuginfo
+  # that slows test binary linking and inflates cached target directories.
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  # rust-toolchain.toml pins the MSRV for local development; CI tests on current
+  # stable by default and only the MSRV job opts back into the pinned toolchain.
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  check-and-test:
+    name: Build, Clippy & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (all targets across all 7 crates)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Workspace unit, conformance, DST & integration tests (nextest)
+        run: cargo nextest run --workspace --locked --profile ci
+
+      - name: Upload nextest JUnit report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-junit-${{ matrix.os }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+
+      - name: Workspace doctests
+        run: cargo test --workspace --doc --locked --no-fail-fast
+
+  feature-isolation:
+    name: Feature Isolation & Minimal Builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: feature-isolation
+
+      - name: Verify minimal SDK facade build (default local-only, zero HTTP/SQLite/keyring)
+        run: cargo test -p rship --locked --no-fail-fast
+
+      - name: Verify all-backends SDK facade build without SQLite or keyring
+        run: cargo check -p rship --no-default-features --features all-backends --locked
+
+      - name: Verify minimal feature-gated CLI build (Local + S3 only, without mimalloc)
+        run: cargo clippy -p rship-cli --no-default-features --features backend-local,backend-s3 --locked -- -D warnings
+
+      - name: Verify isolated backend feature tests (SFTP-only, zero HTTP deps)
+        run: cargo test -p rship-backends --no-default-features --features sftp --locked --no-fail-fast
+
+  msrv-check:
+    name: MSRV 1.100 Check & Test
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: "1.100.0"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust 1.100
+        uses: dtolnay/rust-toolchain@1.100
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.100
+
+      - name: Run full workspace test suite on MSRV 1.100
+        run: cargo test --workspace --locked --no-fail-fast
+
+  doc-check:
+    name: Format & Rustdoc Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Formatting check (rustfmt)
+        run: cargo fmt --all -- --check
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: doc-check
+
+      - name: Verify workspace rustdoc builds cleanly with -D warnings
+        env:
+          RUSTDOCFLAGS: -D warnings
+        # `--lib` documents all 6 library crates while avoiding the rustdoc output
+        # directory collision between lib `rship` and bin `rship` (`rship-cli`).
+        run: cargo doc --workspace --lib --no-deps --locked
+
+  security-audit:
+    name: Security & License Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run cargo-deny (advisories, licenses, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+
+  feature-powerset:
+    name: Feature Powerset (${{ matrix.partition }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: feature-powerset
+          save-if: ${{ matrix.partition == 1 }}
+
+      - name: Verify rship-backends feature powerset (depth 2, partition ${{ matrix.partition }}/3)
+        run: >
+          cargo hack --feature-powerset --depth 2
+          --exclude-features default,all
+          --partition ${{ matrix.partition }}/3
+          check --locked -p rship-backends
+
+      - name: Verify rship feature powerset (depth 2, partition ${{ matrix.partition }}/3)
+        run: >
+          cargo hack --feature-powerset --depth 2
+          --exclude-features default,all-backends,test-utils
+          --partition ${{ matrix.partition }}/3
+          check --locked -p rship
+
+  live-minio-e2e:
+    name: Live S3 (Silo) E2E Smoke Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start live S3 server (pgsty/silo) and create CI bucket
+        env:
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          # Pinned from pgsty/silo:latest (multi-arch OCI index: linux/amd64 + linux/arm64)
+          docker run -d --name silo \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            pgsty/silo@sha256:c20d112390b9a9ce8c11b8af95ad35bcaa62f4759663c09c936cd8d2b511f329 server /data
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then break; fi
+            sleep 1
+          done
+          docker logs silo
+          aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://rship-ci || true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run live S3 conformance, multipart resume, CopyObject & DeleteObjects smoke test
+        env:
+          RSHIP_LIVE_S3_ENDPOINT: http://127.0.0.1:9000
+          RSHIP_LIVE_S3_BUCKET: rship-ci
+          RSHIP_LIVE_S3_ACCESS_KEY: minioadmin
+          RSHIP_LIVE_S3_SECRET_KEY: minioadmin
+          RSHIP_LIVE_S3_PROVIDER: minio
+        run: cargo test -p rship-backends --no-default-features --features s3 --test s3_live_smoke -- --ignored --nocapture

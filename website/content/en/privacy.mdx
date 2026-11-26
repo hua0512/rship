@@ -1,0 +1,38 @@
+---
+title: Privacy Policy for rship
+description: Local-first architecture, zero telemetry, and Google API Services User Data Policy (Limited Use) disclosure.
+section: performance
+---
+
+*Last updated: 2026-11-25*
+
+## 1. Local-First Architecture (Zero Developer Servers)
+
+`rship` is an open-source, local-first command-line and Rust SDK file transfer and synchronization engine. The `rship` project and its maintainers **do not operate any backend servers, analytics collectors, telemetry endpoints, or cloud proxies**.
+
+All network traffic occurs **directly** between the user's device and the third-party storage provider endpoints explicitly configured by the user (such as Google Drive `www.googleapis.com`, Google Cloud Storage `storage.googleapis.com`, Microsoft Graph `graph.microsoft.com`, Dropbox `api.dropboxapi.com`, Azure Blob Storage `*.blob.core.windows.net`, S3-compatible endpoints, WebDAV servers, or SSH/SFTP servers).
+
+## 2. Data Accessed via Google APIs
+
+When a user authorizes `rship` to access Google Drive or Google Cloud Storage via OAuth 2.0:
+
+- `rship` accesses only the files, folders, metadata, change feeds, and storage quota information required to execute the user's explicit CLI or SDK operations (`ls`, `tree`, `size`, `about`, `copy`, `copyto`, `sync`, `move`, `moveto`, `bisync`, `check`, `hashsum`, `dedupe`, `delete`, `purge`, `cat`, `rcat`).
+- OAuth access tokens and refresh tokens are stored **exclusively on the user's local machine** (with restrictive `0600` file permissions or in the user's OS Keyring when enabled via `rship auth keyring-migrate`).
+- Tokens, configuration secrets, and file contents are **never** transmitted to the `rship` developers or any unauthorized third party.
+
+## 3. Google API Services User Data Policy (Limited Use Disclosure)
+
+`rship`'s use and transfer to any other app of information received from Google APIs strictly adheres to the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy), including the **Limited Use** requirements:
+
+- User data is used solely to perform the user-requested local transfer, backup, verification, and synchronization operations.
+- User data is never used for advertising, profiling, data brokering, or training generalized AI/ML models.
+- No human (other than the user on their own local machine) can read or access user data.
+
+## 4. Data Retention & Deletion
+
+- Because `rship` stores all configuration (`config.toml`), SQLite resume journals (`state.db`), and OAuth tokens locally on the user's machine, the user retains 100% control over retention and deletion.
+- Users may revoke `rship`'s access at any time from their [Google Account Third-Party Connections](https://myaccount.google.com/permissions) page and delete local credentials with `rship config rm <remote>` or by deleting the local `rship` config/state directories (printed by `rship config path`).
+
+## 5. Contact
+
+For privacy questions or security reports, please open an issue on [GitHub Issues](https://github.com/hua0512/rship/issues) or inspect the full source code at [github.com/hua0512/rship](https://github.com/hua0512/rship).

@@ -1,0 +1,217 @@
+name: Nightly Quality & Scale
+
+on:
+  schedule:
+    # Daily at 03:00 UTC
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  coverage:
+    name: Workspace Coverage (llvm-cov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain with llvm-tools-preview
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-nextest and cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest, cargo-llvm-cov
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-coverage
+
+      - name: Collect LCOV coverage via cargo-llvm-cov nextest
+        run: cargo llvm-cov nextest --workspace --locked --lcov --output-path lcov.info
+
+      - name: Print coverage summary
+        run: cargo llvm-cov report --summary-only
+
+      - name: Upload LCOV coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 30
+
+  scale-and-bench:
+    name: 1M-Row Scale & Benchmark Tracking
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-scale-bench
+
+      - name: Verify 1,000,000-row SQLite SyncIndex RSS <= 64 MiB
+        run: cargo test --release -p rship-cli --test acceptance_benchmarks acceptance_sqlite_sync_index_1m_rows_rss_under_64mib -- --ignored --nocapture
+
+      - name: Run scale_bench suite and capture metrics
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --release -p rship-backends --test scale_bench -- --ignored --nocapture | tee scale-bench.log
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+
+          records = []
+          with open("scale-bench.log", "r", encoding="utf-8") as fh:
+              for line in fh:
+                  line = line.strip()
+                  if not line.startswith("BENCH_"):
+                      continue
+                  parts = line.split()
+                  name = parts[0]
+                  metrics = {}
+                  for token in parts[1:]:
+                      if "=" in token:
+                          k, v = token.split("=", 1)
+                          try:
+                              metrics[k] = float(v) if "." in v else int(v)
+                          except ValueError:
+                              metrics[k] = v
+                  records.append({"benchmark": name, "metrics": metrics})
+
+          with open("scale-bench-metrics.json", "w", encoding="utf-8") as out:
+              json.dump(records, out, indent=2)
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path and records:
+              with open(summary_path, "a", encoding="utf-8") as s:
+                  s.write("### Nightly Scale Benchmarks\n\n")
+                  s.write("| Benchmark | Metrics |\n| :--- | :--- |\n")
+                  for rec in records:
+                      kv = ", ".join(f"`{k}={v}`" for k, v in rec["metrics"].items())
+                      s.write(f"| `{rec['benchmark']}` | {kv} |\n")
+          PY
+
+      - name: Upload scale benchmark logs and JSON metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-bench-metrics
+          path: |
+            scale-bench.log
+            scale-bench-metrics.json
+          retention-days: 90
+
+  dst-stress:
+    name: Seeded DST Stress Sweep (64 seeds)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-dst-stress
+
+      - name: Run 64-seed DST and fault-injection conformance sweep
+        env:
+          RSHIP_DST_SEEDS: "64"
+          PROPTEST_CASES: "512"
+        run: cargo nextest run -p rship-core -p rship-backends --locked --profile ci
+
+      - name: Upload nextest JUnit report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-dst-junit
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+
+  miri:
+    name: Miri (Scalar CRC & BufferPool)
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust nightly with Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-miri
+
+      - name: Setup Miri sysroot
+        run: cargo miri setup
+
+      - name: Run Miri on pure scalar CRC32C and CRC64-NVME (slice8)
+        run: cargo miri test --lib -p rship-backends --no-default-features --features s3 --locked s3::checksum::tests::crc32c_and_crc64_nvme_match_standard_check_vectors
+
+      - name: Run Miri on rship-core BufferPool
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+        run: cargo miri test --lib -p rship-core --locked buffer::tests
+
+  fuzz-smoke:
+    name: Fuzz Smoke (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [s3_xml, azure_xml, webdav_xml, rclone_ini, crypt_decrypt]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-fuzz-${{ matrix.target }}
+          workspaces: fuzz
+
+      - name: Fuzz ${{ matrix.target }} for 5 minutes
+        run: cargo fuzz run --fuzz-dir fuzz --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=300
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

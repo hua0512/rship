@@ -1,0 +1,98 @@
+---
+title: 无头 VPS、Docker 与密钥环
+description: 在无头 Linux 服务器与非 root Docker 容器中运行 rship，包含隔离配置路径、便携凭据包与系统密钥环安全方案。
+section: getting-started
+---
+
+`rship` 可直接在 `$4` 入门 VPS、CI 构建机与受限容器中稳定运行，不依赖桌面环境或 D-Bus 密钥环。
+
+## 全局路径覆盖与配置隔离
+
+每个 `rship` 子命令均支持全局参数 `--config` 与 `--state-dir`（或对应环境变量 `RSHIP_CONFIG`、`RSHIP_STATE_DIR`），方便按任务隔离配置或共享挂载卷：
+
+```bash
+# 查看本机默认的 config.toml 及状态/令牌路径
+rship config path
+
+# 为单个作业显式指定独立配置与状态目录
+rship --config /srv/rship/config.toml --state-dir /srv/rship/state ls gdrive:
+```
+
+在 Linux 上，默认路径遵循 XDG 规范：`~/.config/rship/config.toml` 与 `~/.local/share/rship/tokens/<remote>.json`。
+
+## 桌面端 → 无头 VPS 凭据包迁移
+
+面对没有系统密钥环或浏览器的无头服务器，只需在本地电脑完成一次交互式授权，再将自包含凭据包传过去即可。`rship auth export` 会自动解析 `keyring://` 引用并打包，目标主机上的 `rship auth import` 则直接落盘为 `0600` 权限的独立文件：
+
+```bash
+# 1. 在桌面端导出（自动解析 keyring:// 密钥）：
+rship auth export gdrive -o gdrive.bundle
+
+# 2. 通过 SSH 拷贝到 VPS、导入并删除临时凭据包：
+scp gdrive.bundle user@vps:~/
+ssh user@vps 'rship auth import --input ~/gdrive.bundle && rm -f ~/gdrive.bundle'
+
+# 3. 确认路径并测试远端连通性：
+ssh user@vps 'rship config path && rship config test gdrive'
+```
+
+## Docker 与 Docker Compose
+
+将 `config.toml` 与 `state/`（存放 `tokens/` 及 SQLite WAL 文件）放在宿主机目录（例如 `/srv/rship`），再挂载进服务容器：
+
+```yaml
+services:
+  rship-worker:
+    image: alpine:latest
+    environment:
+      - RSHIP_CONFIG=/rship/config.toml
+      - RSHIP_STATE_DIR=/rship/state
+    volumes:
+      - /srv/rship:/rship
+      # 可选：直接复用静态链接的 Linux musl 二进制（零运行时依赖）
+      - /usr/local/bin/rship:/usr/local/bin/rship:ro
+    command: ["rship", "sync", "/data", "gdrive:backups", "--adaptive", "--max-delete", "100"]
+```
+
+<Callout type="warning" title="状态目录必须可写">
+**切勿**以只读模式（`:ro`）挂载 `state/`。`rship` 需要将刷新后的 OAuth 令牌写回 `state/tokens/<remote>.json`，并在 `state/state.db`（SQLite WAL）中落盘进行中上传的断点检查点。若容器以非 root 用户运行，请确保该 UID/GID 对 `/srv/rship/state` 具备写权限。
+</Callout>
+
+## 使用系统密钥环保护桌面端密钥
+
+在桌面环境（Windows、macOS 以及启用了 Secret Service 的 Linux）中，可将 `config.toml` 里的明文密钥迁移至系统凭据库：
+
+```bash
+# 将 client secret、S3 密钥、SFTP 密码及 crypt 口令迁入 keyring://rship/...
+rship auth keyring-migrate
+
+# 确认明文已替换为 keyring:// URI
+rship config show
+```
+
+## 生产环境常用范式
+
+### 1. 夜间加密定时备份（Cron / Systemd）
+
+搭配 `flock -n`（跳过重叠触发）与 `--max-delete`，防止源端局部故障引发误删风暴：
+
+```bash
+flock -n /tmp/rship-nightly.lock \
+  rship sync /srv/data vault:nightly --adaptive --max-buffer-mem 16M --max-delete 100
+```
+
+### 2. 零本地落盘的云间直迁
+
+通过有界 `BufferPool` 内存缓冲直接在云存储之间流式拷贝，无需在本地 VPS 磁盘暂存归档文件：
+
+```bash
+rship copy gdrive:archive r2:archive --adaptive --max-buffer-mem 16M
+```
+
+### 3. 数据库流式导出直写加密金库
+
+将压缩后的 `stdin` 数据流直接写入[客户端加密金库](/guide/encryption)：
+
+```bash
+pg_dump prod | zstd -T0 | rship rcat vault:db/prod-$(date +%F).sql.zst
+```

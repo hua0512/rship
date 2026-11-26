@@ -1,0 +1,70 @@
+---
+title: Azure Blob Storage
+description: Azure REST 2023-11-03 driver supporting SharedKey HMAC-SHA256, SAS tokens/URLs, sovereign clouds, Azurite emulator, and Put Block parallel resume.
+section: providers
+---
+
+The `azureblob` backend (`backend-azureblob`) implements Microsoft Azure Blob Storage REST API `2023-11-03` cleanly in Rust without heavy Azure SDK dependencies. It supports SharedKey signing, SAS URLs, sovereign cloud endpoints (such as Azure China), anonymous public containers, and local Azurite testing.
+
+## Setup Recipes
+
+<CodeTabs>
+<CodeTab label="SharedKey HMAC-SHA256">
+
+```bash
+rship auth azureblob az \
+  --account myaccount \
+  --container backups \
+  --access-tier Cool \
+  --key "<BASE64_STORAGE_ACCOUNT_KEY>"
+
+rship about az:
+```
+
+</CodeTab>
+<CodeTab label="SAS URL & Sovereign Cloud">
+
+```bash
+# Scoped SAS token or full SAS container/account URL
+rship auth azureblob az-sas \
+  --sas-url "https://myaccount.blob.core.windows.net?sv=2023-11-03&..." \
+  --container backups
+
+# Custom endpoint (e.g. Azure China)
+rship auth azureblob az-cn \
+  --account myaccount \
+  --container backups \
+  --endpoint https://myaccount.blob.core.chinacloudapi.cn \
+  --key "<KEY>"
+```
+
+</CodeTab>
+<CodeTab label="Azurite Local Emulator">
+
+```bash
+rship auth azureblob azurite --container test --use-emulator
+```
+
+</CodeTab>
+</CodeTabs>
+
+## Flags Reference (`rship auth azureblob`)
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | Logical remote name (e.g. `az`, `az-backups`) |
+| `--account` | Conditional | Storage account name (optional with `--sas-url` or `--use-emulator`) |
+| `--container` | Optional | Default blob container name |
+| `--prefix` | Empty | Virtual directory prefix inside the container |
+| `--key` | None | Base64 SharedKey secret |
+| `--sas-url` | None | SAS query token (`?sv=...`) or full account SAS URL |
+| `--endpoint` | `blob.core.windows.net` | Custom base URL for Azure China, Azure Gov, or mock servers |
+| `--access-tier` | Default | `Hot`, `Cool`, `Cold`, or `Archive` |
+| `--use-emulator` | `false` | Configure standard Azurite `devstoreaccount1` at `127.0.0.1:10000` |
+| `--anonymous` | `false` | Access public containers without credentials |
+
+## Protocol Internals
+
+- **Parallel Block Blob resume**: Objects `<= 16 MiB` upload in a single `PutBlob`; larger blobs upload parallel `8 MiB` blocks (`256 KiB` min to `100 MiB` max per block, up to `50,000` blocks per blob). After interruption, `GetBlockList` inspects uncommitted blocks and skips already-uploaded parts before calling `PutBlockList`.
+- **Integrity & server-side copy**: Validates `Content-MD5` end-to-end and uses `x-ms-copy-source` for server-side intra-account copies.
+- **Range reads**: Full HTTP `Range` support for `rship cat` and seekable encrypted vaults (`crypt` over `azureblob`).

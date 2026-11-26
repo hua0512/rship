@@ -1,0 +1,118 @@
+---
+title: CLI 命令参考
+description: rship CLI 完整全局选项、传输与同步子命令、统一过滤规则及状态恢复参考手册。
+section: core
+---
+
+`rship` 默认输出整洁、支持色彩感知的终端界面，并严格遵循 `NO_COLOR`、`CLICOLOR_FORCE`、`TERM=dumb` 与终端检测 `IsTerminal`。管道命令（`cat`、`hashsum`、`--json`）绝不会夹带多余 ANSI 转义码。
+
+所有命令的 `-h` 仅展示日常高频选项；传入 `--help` 可按功能分组（性能、安全、过滤、网络、后端覆盖）查看全部高级参数。
+
+<span id="global-flags" className="block scroll-mt-24" aria-hidden="true" />
+
+## 全局参数
+
+| 参数 | 环境变量 | 说明 |
+| :--- | :--- | :--- |
+| `-p, --profile <NAME>` | `RSHIP_PROFILE` | 应用 `config.toml` 中 `[profiles.<NAME>]` 预设（叠加于 `[defaults]` 之上，显式 CLI 参数优先） |
+| `--config <PATH>` | `RSHIP_CONFIG` | 指定 `config.toml` 路径（默认为系统配置目录 `rship/config.toml`） |
+| `--state-dir <PATH>` | `RSHIP_STATE_DIR` | 指定 SQLite 状态库与 OAuth 令牌目录 |
+| `--ca-cert <PATH>` | `RSHIP_CA_CERT` | 自定义 PEM 根证书包（用于企业内网/代理 TLS 根证书） |
+| `--proxy <URL>` | `RSHIP_PROXY` | 为控制面与数据面显式指定代理（`http://`、`https://`、`socks5://`、`socks5h://`） |
+| `--connect-timeout <DUR>` | — | TCP/TLS 建连超时（例如 `15s`、`30s`） |
+| `--stall-timeout <DUR>` | — | 数据面字节进度停滞看门狗超时（例如 `30s`、`2m`） |
+| `--control-timeout <DUR>` | — | 控制面元数据/RPC 请求超时（例如 `60s`、`2m`） |
+| `--tpslimit <N>` | `RSHIP_TPSLIMIT` | 跨读写共享的全局 API 每秒请求数上限 |
+| `--drive-stop-on-upload-limit` | `RSHIP_DRIVE_STOP_ON_UPLOAD_LIMIT` | 触及 Google Drive 750 GiB/日配额 `403 userRateLimitExceeded` 时快速返回 `QuotaExceeded` |
+| `--low-level-retries <N>` | `RSHIP_LOW_LEVEL_RETRIES` | 覆盖单次云端 HTTP 请求的底层重试次数 |
+| `--no-changes-feed` | — | 本次调用绕过 Google Drive `changes.list` 增量目录缓存 |
+| `-v` / `-vv` / `-vvv` | — | 逐级提升日志详细度（`info` / `debug` / `trace`） |
+
+## 传输与同步命令
+
+| 命令 | 说明 |
+| :--- | :--- |
+| `rship copy <SRC> <DST>` | 从源端向目标端拷贝文件或目录，不删除目标端多余文件 |
+| `rship copyto <SRC> <DST>` | 精确拷贝单个文件到指定目标路径（支持重命名与云内服务端直拷） |
+| `rship sync <SRC> <DST>` | 镜像同步源端到目标端；仅在通过 Observation Completeness Gate 后才删除目标多余文件 |
+| `rship move <SRC> <DST>` | 移动文件；**仅在远端校验落盘成功后**才删除对应源文件（可选 `--delete-empty-src-dirs`） |
+| `rship moveto <SRC> <DST>` | 精确移动单个文件到指定目标路径 |
+| `rship bisync <A> <B>` | [三树双向同步](/guide/bisync)（支持 `--conflict-strategy keep-both|abort|prefer-a|prefer-b` 与 `--resync`） |
+
+<span id="key-transfer-flags" className="block scroll-mt-24" aria-hidden="true" />
+
+### 核心传输参数
+
+- `--transfers <N>` *(默认读取 `[defaults]` 或 `4`)* — 并发文件 worker 数。
+- `--adaptive` / `--no-adaptive` — 开启或显式关闭 Falcon 双通道自适应并发控制器（`<= 1 MiB` 小文件流水线与 `> 1 MiB` 大文件流分离调度）。
+- `--part-concurrency <N>` *(默认读取 `[defaults]` 或 `4`)* — 支持并行分片后端（S3、Azure Blob、Local）的单文件并发分片数。
+- `--chunk-size <SIZE>` — 覆盖协议分块大小（例如 `64M`、`128M`、`256K`）。
+- `--max-buffer-mem <SIZE>` — `BufferPool` 字节信号量硬上限（例如 `8M`、`16M`）。
+- `--bwlimit <RATE>` — 持续带宽上限或分时段限速表（例如 `10M`、`500K`、`"08:00,10M 23:00,off"`、`off`）。
+- `-n, --dry-run` — 预演变更，不修改目标端或状态库。
+- `--checksum` — 按共同哈希校验比对文件，替代默认的“大小 + 修改时间”。
+- `--delete-mode <after|during|before>` — 控制 `sync` 删除目标多余文件的时机（默认 `after`；兼容 `--delete-before` / `--delete-during` / `--delete-after`）。
+- `--strict-source` — 上传前先将仍在被写入的源文件冻结为独立私有快照（`--strict-source-max-size`，默认 `256M`）。
+- `--no-server-side-copy` — 禁用云端服务端直拷，强制经由本地流式转发。
+- `--max-delete <LIMIT>` — 删除熔断阈值：支持绝对数量（`100`）、百分比（`50%`）或 `off`。
+- `--retries <N>` *(默认 `5`)* — 单文件/会话传输最大重试次数。
+- `--no-traverse` — 搭配 `--files-from` 使用，仅直接 `stat` 清单中列出的路径，跳过全目录扫描。
+- `--no-lock` — 关闭目标端互斥文件锁 `ProcessLock`（仅限外层编排器严格串行调度的场景）。
+- `--tui` / `--progress` — 实时多任务终端 TUI 看板（检测到交互式 TTY 时自动开启，除非指定 `--json`）。
+- `--json` / `--json-progress --stats 1s` — 向 `stdout` 输出结构化最终 JSON 摘要，并向 `stderr` 实时吐出 JSONL 生命周期进度事件。
+
+## 检查、校验与流式读写命令
+
+| 命令 | 说明 |
+| :--- | :--- |
+| `rship ls <TARGET>` | 流式枚举远端或本地对象（`-r/--recursive`、`--json`） |
+| `rship tree <TARGET>` | 以树形结构展示目录（`-L <DEPTH>`、`-d/--dirs-only`、`-s/--sizes`） |
+| `rship size <TARGET>` | 流式统计文件总数与总字节数（`--json`） |
+| `rship about <TARGET>` | 查询存储空间配额与余量（`total`、`used`、`free`、`trashed`、`--json`） |
+| `rship check <SRC> <DST>` | 并发只读一致性检查（`--checkers 8`、`--size-only`、`--one-way`、`--json`） |
+| `rship hashsum <ALGO> <TARGET>` | 输出流式哈希清单（`md5`、`sha256`、`sha1`、`crc32c`、`crc64nvme`），格式兼容 `sha256sum -c` |
+| `rship dedupe <TARGET>` | 基于节点 ID 安全处理同名重复文件（如 Google Drive），支持 `--mode newest|oldest|largest|rename|skip` |
+| `rship cat <TARGET>` | 将任意后端（含 `crypt`）的文件或字节区间（`--offset`、`--count`）流式输出到 `stdout` |
+| `rship rcat <TARGET>` | 从 `stdin` 流式读取并写入本地、云盘或加密远端（`--max-spool 256M`） |
+| `rship mkdir <TARGET>` | 幂等创建目录（含自动补齐父目录链） |
+| `rship delete <TARGET>` | 按过滤规则删除文件并保留目录结构（`--max-delete`、`--dry-run`） |
+| `rship purge <TARGET>` | 递归清理指定前缀下的全部文件与子目录（`--max-delete`、`--dry-run`） |
+
+## 统一过滤规则（全命令通用）
+
+所有过滤参数在 `copy`、`sync`、`move`、`bisync`、`check`、`hashsum`、`size`、`tree` 与 `delete` 中语义完全一致：
+
+```bash
+rship sync ./project r2:project \
+  --exclude '.git/' \
+  --exclude 'target/' \
+  --filter-from ./rules.txt \
+  --min-size 1K \
+  --max-size 2G \
+  --max-age 30d
+```
+
+`rules.txt` 示例（按“先匹配 `+` / `-` 规则生效”原则，`#` 与 `;` 开头为注释）：
+
+```text
+# 即使位于构建目录内也强制包含发布说明
++ docs/**/*.md
+- **/*.tmp
+- node_modules/
++ **
+```
+
+## 状态恢复、鉴权与配置管理命令
+
+| 命令 | 说明 |
+| :--- | :--- |
+| `rship status [--limit 20] [--json]` | 查看 SQLite 中最近的作业记录与可恢复的活动操作 |
+| `rship resume <JOB_ID>` | 以原始完整参数断点恢复已暂停或失败的作业 |
+| `rship gc [--all]` | 清理滞留的本地分片暂存以及 S3 / GDrive 未完成多段会话 |
+| `rship auth <provider> <remote> ...` | 交互或自动化授权 `gdrive`、`s3`、`dropbox`、`gcs`、`azureblob`、`onedrive`、`webdav`、`sftp`、`crypt` |
+| `rship auth export <remote>` / `import` | 导入导出适用于无头服务器的 `rship-remote-v1:` / `rship-auth-v1:` 凭据包 |
+| `rship auth keyring-migrate` | 将 `config.toml` 中的明文密钥迁移至系统密钥环（`keyring://rship/...`） |
+| `rship config path|show|profiles|test|rm|import-rclone` | 管理配置与预设（`config profiles` 查看 `[defaults]` 与 `[profiles.*]`；`config show` 默认脱敏敏感信息） |
+| `rship completions <shell>` | 为 `bash`、`zsh`、`fish`、`powershell` 或 `elvish` 生成命令行补全脚本 |
+
+完整 `config.toml` 结构、`state/` 目录组成、文件锁冲突及常见排查方法请参阅[配置与故障排查](/guide/troubleshooting)。

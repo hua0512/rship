@@ -1,0 +1,70 @@
+---
+title: Azure Blob Storage
+description: Azure REST 2023-11-03 原生驱动，支持 SharedKey HMAC-SHA256、SAS 令牌与 URL、主权云端点、Azurite 模拟器及 Put Block 并发续传。
+section: providers
+---
+
+`azureblob` 后端（`backend-azureblob`）使用 Rust 直接实现 Microsoft Azure Blob Storage REST API `2023-11-03`，不引入沉重的 Azure SDK 依赖。支持 `SharedKey` 签名、SAS URL、主权云端点（如 Azure 中国区）、匿名公开容器与本地 `Azurite` 测试环境。
+
+## 配置示例
+
+<CodeTabs>
+<CodeTab label="SharedKey HMAC-SHA256">
+
+```bash
+rship auth azureblob az \
+  --account myaccount \
+  --container backups \
+  --access-tier Cool \
+  --key "<BASE64_STORAGE_ACCOUNT_KEY>"
+
+rship about az:
+```
+
+</CodeTab>
+<CodeTab label="SAS URL 与主权云">
+
+```bash
+# 带权限范围的 SAS 令牌或完整容器 / 账户 SAS URL
+rship auth azureblob az-sas \
+  --sas-url "https://myaccount.blob.core.windows.net?sv=2023-11-03&..." \
+  --container backups
+
+# 自定义端点（如 Azure 中国区）
+rship auth azureblob az-cn \
+  --account myaccount \
+  --container backups \
+  --endpoint https://myaccount.blob.core.chinacloudapi.cn \
+  --key "<KEY>"
+```
+
+</CodeTab>
+<CodeTab label="Azurite 本地模拟器">
+
+```bash
+rship auth azureblob azurite --container test --use-emulator
+```
+
+</CodeTab>
+</CodeTabs>
+
+## 参数参考 (`rship auth azureblob`)
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | 远端逻辑名称（如 `az`、`az-backups`） |
+| `--account` | 按条件必填 | 存储账户名（使用 `--sas-url` 或 `--use-emulator` 时可选） |
+| `--container` | 可选 | 默认 Blob 容器名 |
+| `--prefix` | 空 | 容器内虚拟目录前缀 |
+| `--key` | 无 | Base64 编码的 `SharedKey` 密钥 |
+| `--sas-url` | 无 | SAS 查询令牌（`?sv=...`）或完整账户 SAS URL |
+| `--endpoint` | `blob.core.windows.net` | 自定义基础 URL，适用于 Azure 中国区、Azure Gov 或 Mock 服务 |
+| `--access-tier` | 默认值 | `Hot`、`Cool`、`Cold` 或 `Archive` |
+| `--use-emulator` | `false` | 自动配置位于 `127.0.0.1:10000` 的标准 `Azurite` `devstoreaccount1` |
+| `--anonymous` | `false` | 无需凭据访问公开容器 |
+
+## 协议细节
+
+- **Block Blob 并发续传**：`<= 16 MiB` 的对象走单次 `PutBlob`；更大对象并发上传 `8 MiB` 数据块（单块范围 `256 KiB` 至 `100 MiB`，单 Blob 上限 `50,000` 块）。中断恢复时先调用 `GetBlockList` 检查未提交块，跳过已上传分片再执行 `PutBlockList`。
+- **完整性校验与服务端拷贝**：端到端校验 `Content-MD5`，同账户内拷贝通过 `x-ms-copy-source` 直接在服务端完成。
+- **范围读取**：完整支持 HTTP `Range` 请求，可用于 `rship cat` 以及叠加在 `azureblob` 之上的随机定位加密保险库（`crypt`）。

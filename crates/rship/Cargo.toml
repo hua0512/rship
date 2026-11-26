@@ -1,0 +1,59 @@
+[package]
+name = "rship"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Ergonomic, low-memory, crash-resumable multi-cloud transfer and sync SDK for Rust"
+
+[features]
+default = ["local"]
+all-backends = [
+    "local",
+    "gdrive",
+    "s3",
+    "webdav",
+    "onedrive",
+    "sftp",
+    "dropbox",
+    "gcs",
+    "azureblob",
+    "crypt",
+]
+local = ["rship-backends/local"]
+gdrive = ["rship-backends/gdrive", "http"]
+s3 = ["rship-backends/s3", "http"]
+webdav = ["rship-backends/webdav", "http"]
+onedrive = ["rship-backends/onedrive", "http"]
+sftp = ["rship-backends/sftp"]
+dropbox = ["rship-backends/dropbox", "http"]
+gcs = ["rship-backends/gcs", "http"]
+azureblob = ["rship-backends/azureblob", "http"]
+crypt = ["dep:rship-crypto"]
+http = ["dep:rship-transport"]
+sqlite = ["dep:rship-state"]
+keyring = ["dep:keyring"]
+test-utils = ["rship-core/test-utils"]
+
+[dependencies]
+directories.workspace = true
+keyring = { workspace = true, optional = true }
+rship-backends = { workspace = true, default-features = false }
+rship-core.workspace = true
+rship-crypto = { workspace = true, optional = true }
+rship-state = { workspace = true, optional = true }
+rship-transport = { workspace = true, optional = true }
+serde.workspace = true
+tokio.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

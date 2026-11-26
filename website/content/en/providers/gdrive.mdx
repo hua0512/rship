@@ -1,0 +1,116 @@
+---
+title: Google Drive
+description: Drive v3 transfers with Desktop PKCE loopback, 5-minute Cloud Console OAuth setup, Service Accounts, changes.list caching, and 750 GiB/day failover.
+section: providers
+---
+
+The `gdrive` backend (`backend-gdrive`) speaks Google Drive REST API v3 directly without external SDK bloat. It pairs **Desktop PKCE loopback OAuth 2.0** (never the deprecated OOB flow) or **RS256 Service Account JWTs** with SQLite-backed incremental `changes.list` directory caching, CUBIC adaptive rate limiting, and bit-exact 308 resumable uploads.
+
+## Authorization Recipes
+
+<CodeTabs>
+<CodeTab label="Desktop PKCE Loopback">
+
+```bash
+# Opens browser on http://127.0.0.1:<ephemeral-port>/callback
+rship auth gdrive gdrive \
+  --client-id "<YOUR_CLIENT_ID>.apps.googleusercontent.com" \
+  --client-secret "<YOUR_CLIENT_SECRET>" \
+  --scope drive
+
+# Move tokens into macOS/Windows/Linux OS Keyring
+rship auth keyring-migrate
+rship about gdrive:
+```
+
+</CodeTab>
+<CodeTab label="Shared Drive (Service Account)">
+
+```bash
+# Service Accounts have 0 MiB personal My Drive quota — target a Shared Drive
+rship auth gdrive team-drive \
+  --service-account-file ./service-account.json \
+  --shared-drive-id "<SHARED_DRIVE_ID>"
+
+rship ls team-drive:
+```
+
+</CodeTab>
+<CodeTab label="Workspace Impersonation (DwD)">
+
+```bash
+# Domain-Wide Delegation for Google Workspace service bots
+rship auth gdrive corp \
+  --service-account-file ./service-account.json \
+  --impersonate "backup-bot@yourdomain.com" \
+  --root-folder-id "root"
+```
+
+</CodeTab>
+</CodeTabs>
+
+## OAuth 2.0 Setup
+
+You can also print this setup guide in your terminal anytime with `rship auth gdrive --guide`.
+
+### Choosing Your Authorization Path
+
+| Path | Best For | Google Review / CASA Audit? | Setup Time |
+| :--- | :--- | :--- | :--- |
+| **Path A: Bring Your Own Client ID (Recommended)** | Personal use, teams, self-hosted servers, power users | **None** (*Testing* or Workspace *Internal*, up to 100 test users) | **~5 minutes** |
+| **Path B: Public Verified OAuth App** | Distributing a shared default Client ID to third-party users | **Yes** for `drive` / `drive.readonly` (Restricted Scopes + annual CASA Tier 2). **`drive.file` is Non-Sensitive** (no CASA audit). | **2–6 weeks** |
+| **Path C: Service Account (RS256 JWT)** | Automated CI/servers accessing **Shared Drives** or Workspace **Domain-Wide Delegation** | **None** | **~5 minutes** |
+
+### Path A: Create Your Own Desktop Client ID (5 Minutes)
+
+1. **Create Project & Enable API**: Open [Google Cloud Console](https://console.cloud.google.com/), create/select a project (e.g. `rship-personal-drive`), go to **APIs & Services → Library**, search **Google Drive API**, and click **Enable**.
+2. **Configure Auth Platform**: Open **Google Auth Platform → Overview → Get Started** (or **OAuth consent screen**), set App name to `rship`, add your support email, and choose **Internal** (Google Workspace, never expires) or **External** (personal `@gmail.com`).
+3. **Add Scopes & Test Users**: Open **Data Access → Add or Remove Scopes** and pick the narrowest scope you need:
+   - `https://www.googleapis.com/auth/drive` (`--scope drive`) — Full Drive access for syncing existing folders.
+   - `https://www.googleapis.com/auth/drive.file` (`--scope drive.file`) — App-created files only (**Non-Sensitive**, zero CASA audit).
+   - `https://www.googleapis.com/auth/drive.readonly` (`--scope drive.readonly`) — Read-only backup/mirror.
+   Add every Google email you will authorize under **Audience → Test users**.
+4. **Create Desktop App Credentials**: Under **Google Auth Platform → Clients → Create Client**, pick **Desktop app** (required so Google permits `http://127.0.0.1:<port>/callback` loopback redirects) and copy the generated **Client ID** and **Client Secret**.
+5. **Authorize & Verify**: Run `rship auth gdrive gdrive --client-id ... --client-secret ...`, then verify with `rship config test gdrive` and `rship about gdrive:`. Running on a headless server? See [Headless VPS, Docker & Keyring](/guide/deployment).
+
+<Callout type="tip" title="Avoiding 7-Day Refresh Token Expiry">
+For *External* apps left in **Testing** mode, Google expires refresh tokens after **7 days**. For long-running unattended jobs, either select **Internal** (Workspace), click **Publish app** (switches to *In production*; personal users click *Advanced → Continue* once during sign-in), or switch to **Path C (Service Account)** for Shared Drives.
+</Callout>
+
+### Path B: Public Verified OAuth App Checklist
+
+If you host a shared public Client ID for third-party users:
+
+1. **Verified Domain & Public Homepage**: Verify your domain in [Google Search Console](https://search.google.com/search-console) and host this standalone `rship` site (`website/`).
+2. **Public Privacy Policy URL**: Link directly to the [Privacy Policy](/privacy) hosted on the same verified domain.
+3. **App Logo (`120×120` PNG)**: Published at `/logo-120.png` (from `assets/logo-120.png`).
+4. **Scope Choice**: Prefer `drive.file` (Non-Sensitive, fast verification, zero CASA fee) for shared public clients, while letting power users plug in their own Client ID via Path A for full `drive` access.
+5. **Unlisted YouTube Demo Video**: 60–90 s screencast showing `rship auth gdrive ...`, the visible `client_id` & scopes in the consent screen, clicking Allow, and running `rship about`, `rship copy`, and `rship ls`.
+
+### Path C: Service Account Notes
+
+<Callout type="info" title="Quota Note">
+Google Drive Service Accounts have **0 bytes of personal My Drive quota** on modern GCP accounts. Always target a **Shared Drive (`--shared-drive-id`)** or impersonate a Workspace user (`--impersonate`).
+</Callout>
+
+## Flags Reference (`rship auth gdrive`)
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | Logical remote name (e.g. `gdrive`, `work-drive`) |
+| `--client-id` | None | Google Cloud OAuth 2.0 **Desktop app** `client_id` |
+| `--client-secret` | None | OAuth 2.0 `client_secret` (required by Google Desktop OAuth token exchange) |
+| `--scope` | `drive` | Alias (`drive`, `drive.file`, `drive.readonly`) or full scope URL |
+| `--root-folder-id` | `root` | Pin operations to a specific folder ID inside My Drive |
+| `--shared-drive-id` | None | Shared Drive (`team_drive`) ID; enables `corpora=drive` & `supportsAllDrives=true` |
+| `--service-account-file` | None | Non-interactive RS256 JWT key file for CI / servers |
+| `--impersonate` | None | Domain-Wide Delegation subject email (`sub`) |
+| `--guide` | `false` | Print complete Cloud Console setup instructions and exit |
+
+## Protocol Internals, Quota Failover & Dedupe
+
+- **Chunk geometry & 308 resume**: Files `<= 5 MiB` use single-shot `uploadType=multipart`; larger files stream in `256 KiB`-aligned resumable sessions (`256 MiB` default chunk size) with `Content-Range` resume persisted in SQLite WAL.
+- **Incremental `changes.list` inventory**: Directory trees and `changes.list` page tokens are synchronized into SQLite (`gdrive_nodes`), avoiding slow recursive Drive traversals on repeat `sync` runs. Pass `--no-changes-feed` globally when you need a fresh uncached listing.
+- **Write-QPS pacing & 750 GiB/day limit**: Writes are smoothed by a `8.0 creates/s` default token bucket with CUBIC backoff on `403`/`429`. Pass global `--drive-stop-on-upload-limit` (`RSHIP_DRIVE_STOP_ON_UPLOAD_LIMIT=1`) to turn Google's daily `403 userRateLimitExceeded` (750 GiB/day) quota cap into an immediate `ErrorKind::QuotaExceeded`, enabling automatic account rotation in the Rust SDK `FailoverPool`.
+- **Duplicate filenames (`rship dedupe`)**: Because Drive permits sibling files with the same name, use `rship dedupe gdrive:photos --mode newest` (`newest`, `oldest`, `largest`, `rename`, or `skip`) to clean up duplicates safely by node ID.
+- **Zero-reupload dedupe & server-side copy**: Same-remote copies use `files.copy`, and `rship cat` supports HTTP `Range` downloads.

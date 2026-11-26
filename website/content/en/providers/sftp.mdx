@@ -1,0 +1,65 @@
+---
+title: SSH / SFTP
+description: russh SFTP transport with .rship.part offset crash-resume, atomic posix-rename commits, and known_hosts verification.
+section: providers
+---
+
+The `sftp` backend (`backend-sftp`) is built on `russh` + `russh-sftp`. Every remote binary transfer uses staged temporary files with byte-offset resume and atomic `posix-rename` commit.
+
+## Setup Recipes
+
+<CodeTabs>
+<CodeTab label="SSH Key (Recommended)">
+
+```bash
+rship auth sftp vps \
+  --host 10.0.0.5 \
+  --port 22 \
+  --user deploy \
+  --key-file ~/.ssh/id_ed25519 \
+  --root-path /srv/backups
+
+# Verify host key fingerprint & disk quota via statvfs
+rship about vps:
+```
+
+</CodeTab>
+<CodeTab label="Password / Encrypted Key">
+
+```bash
+rship auth sftp nas \
+  --host nas.local \
+  --user backup \
+  --password "<SSH_PASSWORD>" \
+  --host-key-policy strict \
+  --known-hosts ~/.ssh/known_hosts
+
+# Lock password in OS Keyring
+rship auth keyring-migrate
+```
+
+</CodeTab>
+</CodeTabs>
+
+## Flags Reference (`rship auth sftp`)
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | Logical remote name (e.g. `vps`, `nas-ssh`) |
+| `--host` | Required | SSH server hostname or IP address |
+| `--port` | `22` | TCP port |
+| `--user` | Required | SSH username |
+| `--root-path` | Empty | Remote working root (e.g. `/data/backups` or relative `backups`) |
+| `--key-file` | None | Path to private key (`ed25519`, `ecdsa`, `rsa`) |
+| `--key-passphrase` | None | Passphrase for encrypted private key file |
+| `--password` | None | Password authentication secret |
+| `--host-key-policy` | `accept-new` | `accept-new` (TOFU), `strict` (require match in `known_hosts`), or `insecure` |
+| `--known-hosts` | Default SSH file | Custom `known_hosts` path |
+
+## Protocol Internals & Crash Resume
+
+- **Single-shot vs. resumable staging**: Files `<= 256 KiB` write cleanly via direct staged transfer; larger uploads checkpoint every `16 MiB` into `.rship.part.*` staging files with byte-offset crash-resume and promote atomically via SFTP `posix-rename`.
+- **Bounded lazy session pooling**: Opens SSH/SFTP channels lazily within `rship`'s concurrency bounds and enforces independent `connect_timeout` (`15s`) and `io_timeout` (`30s`) limits.
+- **Storage quota**: Queries remote `statvfs` extension for `rship about <remote>:` without spawning an SSH shell.
+- **No server-side copy**: Like rclone's SFTP backend, `sftp -> sftp` transfers stream through the local `BufferPool` (`<= 64 MiB` RSS cap).
+- **rclone migration**: Imports `host`, `port`, `user`, obscured `pass`, `key_file`, and `key_file_pass` cleanly with `rship config import-rclone`.

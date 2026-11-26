@@ -1,0 +1,202 @@
+---
+title: Rust SDK & Production Embedding
+description: Embed RshipClient and FailoverPool directly into Tokio services with shared HTTP transport, SQLite WAL state, and zero anyhow in public APIs.
+section: sdk
+---
+
+Replace `rclone` in high-throughput automated upload pipelines using either the **standalone CLI** or the ergonomic top-level **`rship` Rust SDK crate** (zero `anyhow` in public library APIs, `#![warn(missing_docs)]`, lean `default = ["local"]` feature graph).
+
+<Callout type="info" title="How rship Compares to Apache OpenDAL & object_store">
+Libraries such as `Apache OpenDAL` and `object_store` excel as low-level unified object-access primitives (`read`, `write`, `list`). **`rship` is a full transfer & synchronization engine** built on top of 10 drivers: out of the box it provides SQLite WAL crash resumption, bounded `<= 64 MiB` `BufferPool` backpressure, Falcon dual-lane scheduling, Three-Tree `bisync`, CUBIC rate limiting, and multi-account quota failover (`FailoverPool`).
+</Callout>
+
+## Option A: Ergonomic Rust SDK (`rship` Crate — Recommended)
+
+Embedding `rship` directly into your Tokio service eliminates subprocess spawning, stdout/stderr JSON parsing, and cross-process locking while sharing a single `HttpTransport`, per-account `ScopedLimiter`, `dir_id_cache`, `mkdir_locks`, `BufferPool`, and WAL-mode `StateActor` across all workers.
+
+### 1. Minimal `Cargo.toml`
+
+The workspace targets **Rust `1.100+`** (`edition = "2024"`). Pin a release tag directly from Git (publication to `crates.io` will follow pre-1.0 API stabilization):
+
+```toml
+[dependencies]
+# Default: lightweight local-only SDK (zero HTTP, zero SQLite, zero keyring):
+rship = { git = "https://github.com/hua0512/rship", tag = "v0.1.0" }
+
+# Production Local + Google Drive + durable SQLite crash-resumption:
+rship = { git = "https://github.com/hua0512/rship", tag = "v0.1.0", features = ["gdrive", "sqlite"] }
+
+# All 10 backends + SQLite + OS Keyring:
+rship = { git = "https://github.com/hua0512/rship", tag = "v0.1.0", features = ["all-backends", "sqlite", "keyring"] }
+```
+
+### 2. `RshipClient`: `rclone.conf`, Direct-Stat `move_files`, Push Events & Graceful Shutdown
+
+```rust
+use rship::prelude::*;
+
+pub async fn run_pipeline() -> Result<()> {
+    // Load existing rclone.conf (or .config_file("/app/config/rship.toml"))
+    let client = RshipClient::builder()
+        .rclone_conf("/app/config/rclone.conf")
+        .state_dir("/app/state")
+        .tps_limit(10.0)
+        .gdrive_stop_on_upload_limit(true)
+        .gdrive_low_level_retries(3)
+        .build()?;
+
+    let cancel = CancelFlag::new();
+
+    // Direct-stat verified move over explicit paths — never scans in-progress .part files
+    let report = client
+        .move_files(
+            "/var/backups/outgoing",
+            "gdrive-1:backups/2026-11",
+            ["archive.tar.zst", "checksums.sha256"],
+        )
+        .bwlimit(20 * 1024 * 1024)
+        .chunk_size(256 * 1024 * 1024)
+        .retries(1)
+        .cancel_on(cancel.clone())
+        .on_event(|ev| match ev {
+            TransferEvent::PhaseChanged { phase, .. } => tracing::info!(%phase, "phase"),
+            TransferEvent::FileCompleted { result, .. } => tracing::info!(?result, "file done"),
+            _ => {}
+        })
+        .run()
+        .await?;
+
+    assert!(report.is_success());
+
+    // Exact single-file moveto for metadata sidecar
+    let sidecar_report = client
+        .move_file(
+            "/var/backups/outgoing/manifest.json",
+            "gdrive-1:backups/2026-11/manifest.json",
+        )
+        .bwlimit(20 * 1024 * 1024)
+        .retries(1)
+        .run()
+        .await?;
+    assert!(sidecar_report.is_success());
+
+    // Wait for active jobs, flush SQLite WAL, and join background actor thread
+    client.shutdown().await?;
+    Ok(())
+}
+```
+
+### 3. Programmatic Remote Builders & Lazy Runtime
+
+All declarative `*RemoteConfig` types (`S3RemoteConfig`, `GdriveRemoteConfig`, `GcsRemoteConfig`, `AzureblobRemoteConfig`, `OnedriveRemoteConfig`, `DropboxRemoteConfig`, `WebdavRemoteConfig`, `SftpRemoteConfig`, `CryptRemoteConfig`) are `#[non_exhaustive]`, redact secrets in `Debug`, and pass directly into `ClientBuilder::remote` via `Into<RemoteConfig>`:
+
+```rust
+use rship::prelude::*;
+
+pub async fn sync_encrypted_to_r2() -> Result<RunReport> {
+    let client = RshipClient::builder()
+        .ephemeral()
+        .remote(
+            "r2",
+            S3RemoteConfig::new("r2")
+                .with_bucket("media-archive")
+                .with_endpoint("https://<account-id>.r2.cloudflarestorage.com")
+                .with_credentials("AKIA...", "secret-key"),
+        )
+        .remote(
+            "vault",
+            CryptRemoteConfig::new("r2:encrypted")
+                .with_password("strong-passphrase"),
+        )
+        .build()?;
+
+    let report = client
+        .sync("/var/backups", "vault:daily")
+        .delete_mode(DeleteMode::After)
+        .backup_dir("vault:deleted-archive")
+        .bwlimit_schedule("08:00,20M 23:00,off".parse()?)
+        .run()
+        .await?;
+
+    client.shutdown().await?;
+    Ok(report)
+}
+```
+
+- **Lazy `HttpTransport` & `StateActor`**: Local filesystem and SFTP targets skip TLS root-cert loading and HTTP pool allocation completely; read-only operations (`stat`, `list`, `resolve_any`) never open `journal.db` or spawn the background SQLite thread until a transfer, `bisync`, or GDrive `changes.list` operation actually needs durable state.
+
+### 4. Multi-Account 750 GiB/day Quota Failover (`FailoverPool`)
+
+```rust
+use rship::prelude::*;
+
+pub async fn upload_with_account_failover(
+    client: &RshipClient,
+    local_dir: &str,
+    remote_prefix: &str,
+    files: &[&str],
+    cancel: CancelFlag,
+) -> Result<(String, RunReport)> {
+    let pool = client.failover_pool(&["gdrive-1", "gdrive-2", "gdrive-3"])?;
+    let dst_rel = RelPath::parse(remote_prefix)?;
+
+    pool.run_with_failover(
+        DEFAULT_QUOTA_COOLDOWN,
+        DEFAULT_THROTTLE_COOLDOWN,
+        |acct_name, backend| {
+            let client = client.clone();
+            let dst = TransferTarget::backend(backend, dst_rel.clone());
+            let files: Vec<String> = files.iter().map(|s| (*s).to_string()).collect();
+            let cancel = cancel.clone();
+            async move {
+                let rep = client
+                    .move_files(local_dir, dst, files)
+                    .bwlimit(20 * 1024 * 1024)
+                    .chunk_size(256 * 1024 * 1024)
+                    .retries(1)
+                    .cancel_on(cancel)
+                    .run()
+                    .await?;
+
+                if rep
+                    .file_results
+                    .iter()
+                    .any(|r| r.error_kind == Some(ErrorKind::QuotaExceeded))
+                {
+                    return Err(Error::quota_exceeded(format!(
+                        "account `{acct_name}` reached daily upload quota"
+                    )));
+                }
+                Ok(rep)
+            }
+        },
+    )
+    .await
+}
+```
+
+### 5. Ephemeral Zero-Disk Mode & Low-Level Composition
+
+- `RshipClient::ephemeral()` runs completely in memory (`MemoryJournalStore` + `MemorySyncIndex` + in-memory `rclone.conf` credentials) with zero SQLite or config writes on disk.
+- `client.resolve_any(target).await?` resolves either a directory prefix or a single file into a `ResolvedTarget` (`backend`, `prefix`, `single_file`).
+- Underlying crates remain re-exported via `rship::core`, `rship::backends`, `rship::transport`, `rship::state`, and `rship::crypto` for custom `StorageBackend`, `JournalStore`, `EventSink`, or deterministic `VirtualClock` + `ChaosBackend` testing.
+
+### 6. Event & Error Contracts
+
+- **`TransferEvent`** (`#[non_exhaustive]`): Emits a strictly monotonic `seq >= 1` per job; `JobStarted` is always `seq == 1` and `JobFinished` is guaranteed terminal (even on cancellation or fatal error), alongside `PhaseChanged`, `FileStarted`, `FileCompleted`, and `ConflictDetected`.
+- **`RetryClass` & `ErrorKind`** (`#[non_exhaustive]`): Errors classify cleanly into `RetryClass` (`Retryable`, `Throttled`, `Permanent`, `SessionExpired`, `SourceMutated`, `Cancelled`) and structured `ErrorKind` variants (`QuotaExceeded`, `RateLimited`, `Conflict`, `SourceMutated`, `Cancelled`, etc.) so callers never need to pattern-match error strings.
+
+## Option B: Production CLI Subprocess (Headless / Docker)
+
+If an external supervisor invokes the `rship` binary directly instead of linking the crate, import credentials once with `rship config import-rclone` (or `rship auth import`), then see [Production Headless Mapping](/guide/migration#production-headless-mapping) and [Headless VPS, Docker & Keyring](/guide/deployment) for the complete `mkdir` / `moveto` / `--files-from` command equivalents.
+
+```bash
+rship --config /app/config/rship.toml --state-dir /app/state \
+  config import-rclone /app/config/rclone.conf
+```
+
+### Production Orchestrator Guarantees
+- **Zero directory scan on `--files-from` + `--no-traverse`**: Directly `stat`s only listed relative paths, skipping sibling actively-written files and avoiding remote list API calls.
+- **Fast-fail on 750 GiB/day cap**: `--drive-stop-on-upload-limit` converts `403 userRateLimitExceeded` on upload endpoints into permanent `QuotaExceeded` (`"error_kind": "quota_exceeded"`), while `403 rateLimitExceeded` QPS bursts still retry with CUBIC backoff.
+- **Structured telemetry**: `--json-progress --stats 1s` emits JSONL lifecycle events to `stderr`, while `--json` writes one final per-file attributed JSON report to `stdout`.
+- **Cross-restart resume**: Active `session_uri` and `confirmed_offset` persist in `journal.db`; re-running after `SIGKILL`/`SIGTERM` resumes via `308` / `ListParts` with zero duplicates.

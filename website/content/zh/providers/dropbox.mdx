@@ -1,0 +1,48 @@
+---
+title: Dropbox
+description: Dropbox API v2 驱动，支持 4 MiB 对齐上传会话、原生 dropbox_content_hash 校验、离线 PKCE 令牌与 copy_v2 服务端拷贝。
+section: providers
+---
+
+`dropbox` 后端（`backend-dropbox`）基于 Dropbox API v2 实现，支持 `token_access_type=offline` 的 PKCE 本地回环授权、与 Dropbox 内容哈希树对齐的 **4 MiB 上传会话分块**，以及原生 `files/copy_v2` 服务端拷贝。
+
+## Dropbox App Console 配置
+
+1. 打开 [Dropbox App Console](https://www.dropbox.com/developers/apps) 并点击 **Create app**。
+2. 选择 **Scoped access**，按需选取 **Full Dropbox**（访问整个账号）或 **App folder**（隔离的应用目录），填写唯一的应用名称并创建。
+3. 在应用的 **Permissions** 标签页勾选以下权限并点击 **Submit**：
+   - `account_info.read`（`rship about` 必需）
+   - `files.metadata.read` 与 `files.metadata.write`
+   - `files.content.read` 与 `files.content.write`
+4. 在 **Settings** → **OAuth 2** → **Redirect URIs** 中确认回调设置：`rship auth dropbox` 会绑定临时本地回环地址 `http://127.0.0.1:<port>/callback`（启用 PKCE 且携带 `token_access_type=offline`）。若应用策略有要求，请补充对应的 Redirect URI，然后复制 **App key**（对应 `--client-id`）。
+5. *从 rclone 迁移？* 无需新建应用，可直接运行 `rship config import-rclone` 导入现有凭据。
+
+## 快速配置
+
+```bash
+# 桌面 OAuth2 PKCE 登录，获取离线刷新令牌
+rship auth dropbox dbx \
+  --client-id "<DROPBOX_APP_KEY>" \
+  --root-path /backups
+
+# 可选：将刷新令牌迁移至系统密钥环保存
+rship auth keyring-migrate
+rship about dbx:
+```
+
+## 参数参考（`rship auth dropbox`）
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | 远端逻辑名称（如 `dropbox`、`work-dbx`） |
+| `--client-id` | 交互输入 | Dropbox App Console 中的 App Key |
+| `--client-secret` | 无 | 可选的 App Secret（纯公开桌面 PKCE 应用留空即可） |
+| `--root-path` | `/` | Dropbox 内的根目录路径（如 `/backups`） |
+| `--access-token` | 无 | 直接传入 Bearer 令牌，用于非交互式 CI 或测试 |
+
+## 协议实现细节
+
+- **4 MiB 块对齐会话**：不超过 `4 MiB` 的文件直接走 `/files/upload`；更大的文件通过 `upload_session/start` + `append_v2` + `finish` 分块上传，默认分块 `48 MiB`（`12 × 4 MiB`，低于 Dropbox `148 MiB` 的安全单次会话上限），每个非末尾分块均严格对齐 `4 MiB`。
+- **`incorrect_offset` 崩溃续传恢复**：进程中断或断网后重启会话若出现偏移量不一致，`rship` 会直接读取服务端返回的 `correct_offset`，从精确的块边界续传，不重复上传数据。
+- **原生 `dropbox_content_hash`**：内置 Dropbox 4 MiB 块 SHA-256 哈希树计算，`rship check` 与去重无需重新下载文件即可校验比特级一致性。
+- **服务端拷贝与批量删除**：远端拷贝走 `files/copy_v2`，`rship sync` / `delete` 阶段则调用 `delete_batch` 批量删除。

@@ -1,0 +1,72 @@
+---
+title: WebDAV & NAS
+description: Vendor-aware WebDAV driver for Nextcloud, OwnCloud, Alist, Synology NAS, and InfiniCloud with Chunked Upload v2 and COPY.
+section: providers
+---
+
+The `webdav` backend (`backend-webdav`) adapts HTTP/WebDAV semantics automatically to six vendor profiles, unlocking Nextcloud and OwnCloud **Chunked Upload v2** resumable pipelines while keeping Synology NAS, Alist/OpenList, InfiniCloud, and generic DAV servers fast and reliable.
+
+## Setup Recipes
+
+<CodeTabs>
+<CodeTab label="Nextcloud / OwnCloud">
+
+```bash
+# Auto-derives /remote.php/dav/uploads/<user> for Chunked Upload v2
+rship auth webdav nc \
+  --vendor nextcloud \
+  --url https://cloud.example.com/remote.php/dav/files/alice \
+  --username alice \
+  --password "<APP_PASSWORD>"
+
+rship about nc:
+```
+
+</CodeTab>
+<CodeTab label="Synology / Alist / Bearer">
+
+```bash
+# Synology DSM WebDAV Server
+rship auth webdav syno \
+  --vendor synology \
+  --url https://nas.example.com:5006/backups \
+  --username backup-bot
+
+# Alist / OpenList or generic bearer-token WebDAV
+rship auth webdav alist \
+  --vendor alist \
+  --url https://alist.example.com/dav \
+  --bearer-token "<TOKEN>"
+```
+
+</CodeTab>
+</CodeTabs>
+
+## Supported Vendor Profiles (`--vendor`)
+
+| Vendor | Chunked Upload v2 | Server-Side `COPY` | `PROPFIND` Quota | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `nextcloud` | Yes (`10–100 MiB` parts) | Yes | Yes | Recommended: use Nextcloud App Passwords |
+| `owncloud` | Yes (`10–100 MiB` parts) | Yes | Yes | Override endpoint via `--chunked-upload-root` if customized |
+| `alist` | Streaming `PUT` | Yes | Partial | Also accepts alias `openlist` |
+| `synology` | Streaming `PUT` | Yes | Yes | Works over Synology HTTPS port `:5006` |
+| `infinicloud` | Streaming `PUT` | Yes | Yes | Compatible with TeraCLOUD / InfiniCloud WebDAV |
+| `generic` | Streaming `PUT` | Yes | Yes | Default fallback for Nginx/Caddy/Apache DAV |
+
+## Flags Reference (`rship auth webdav`)
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | Logical remote name (e.g. `nc`, `nas`) |
+| `--url` | Required | Base WebDAV URL |
+| `--vendor` | `generic` | One of `nextcloud`, `owncloud`, `alist`, `synology`, `infinicloud`, `generic` |
+| `--username` | None | Basic auth username |
+| `--password` | None | Basic auth password |
+| `--bearer-token` | None | HTTP Bearer auth token (alternative to username/password) |
+| `--chunked-upload-root` | Auto-derived | Explicit Nextcloud/OwnCloud `/remote.php/dav/uploads/<user>` URL |
+
+## Protocol Internals
+
+- **Nextcloud / OwnCloud Chunked Upload v2**: Files above `10 MiB` upload to `/remote.php/dav/uploads/<user>/<op_id>` in `10 MiB` default parts (up to `100 MiB` cap) and atomically `MOVE` to the destination path — preventing partial corrupt files on interrupted transfers.
+- **Auto URL resolution**: Providing `https://host/remote.php/dav/files/alice[/subpath]` automatically resolves the matching `/remote.php/dav/uploads/alice` chunked upload root unless `--chunked-upload-root` is set.
+- **Corporate proxies & self-signed NAS certs**: Combine with global `--ca-cert ./nas-ca.pem` and `--proxy` flags cleanly.

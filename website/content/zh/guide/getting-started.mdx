@@ -1,0 +1,158 @@
+---
+title: 快速开始与安装
+description: 安装单二进制 rship 客户端、授权连接云盘存储后端，并运行你的第一次支持崩溃断点续传的同步任务。
+section: getting-started
+---
+
+`rship` 作为单个自包含原生可执行文件发布，同时提供支持 Feature 按需裁剪的模块化 Rust SDK。
+
+## 安装
+
+推荐通过通用安装脚本安装最新预编译版本——脚本会自动从 [GitHub Releases](https://github.com/hua0512/rship/releases/latest) 解析最新标签、识别系统、架构与 libc（`glibc >= 2.28` 的 Linux 主机默认选择 `gnu`，Alpine 或低版本 glibc 自动选择静态 `musl`）并自动校验 `SHA256SUMS.txt`；也可以按架构手动下载压缩包（支持 Linux glibc ≥ 2.28 `x86_64-unknown-linux-gnu` / `aarch64-unknown-linux-gnu`、Linux 静态 musl `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl`、macOS `aarch64-apple-darwin` / `x86_64-apple-darwin` 与 Windows `x86_64-pc-windows-msvc`）。
+
+<CodeTabs>
+<CodeTab label="macOS / Linux">
+
+```bash
+# 自动解析最新 GitHub Release、识别 gnu (glibc >= 2.28) / musl 并校验 SHA256SUMS.txt
+curl -fsSL https://hua0512.github.io/rship/install.sh | sh
+
+# 可选：指定版本、libc（gnu|musl）或自定义安装目录
+# curl -fsSL https://hua0512.github.io/rship/install.sh \
+#   | RSHIP_VERSION=v0.1.0 RSHIP_LIBC=musl RSHIP_INSTALL_DIR=/usr/local/bin sh
+```
+
+</CodeTab>
+<CodeTab label="Windows (PowerShell)">
+
+```powershell
+# 自动解析最新版本、校验 SHA256，并将 rship 加入用户 PATH
+irm https://hua0512.github.io/rship/install.ps1 | iex
+
+# 可选：提前固定需要安装的发布版本
+# $env:RSHIP_VERSION = "v0.1.0"
+# irm https://hua0512.github.io/rship/install.ps1 | iex
+```
+
+</CodeTab>
+<CodeTab label="手动安装 (Linux / macOS)">
+
+```bash
+VERSION="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/hua0512/rship/releases/latest | sed 's|.*/||')"
+OS="$(uname -s)" ARCH="$(uname -m)"
+# Alpine / 极简容器 / glibc < 2.28 请改用 -musl
+case "${OS}:${ARCH}" in
+  Linux:x86_64|Linux:amd64)    TARGET="x86_64-unknown-linux-gnu" ;;
+  Linux:aarch64|Linux:arm64)   TARGET="aarch64-unknown-linux-gnu" ;;
+  Darwin:arm64|Darwin:aarch64) TARGET="aarch64-apple-darwin" ;;
+  Darwin:x86_64)               TARGET="x86_64-apple-darwin" ;;
+esac
+curl -fsSLO "https://github.com/hua0512/rship/releases/download/${VERSION}/rship-${VERSION}-${TARGET}.tar.gz"
+tar -xzf "rship-${VERSION}-${TARGET}.tar.gz"
+sudo install -m 755 "rship-${VERSION}-${TARGET}/rship" /usr/local/bin/rship
+rship --version
+```
+
+</CodeTab>
+<CodeTab label="手动安装 (Windows)">
+
+```powershell
+$Version = (Invoke-RestMethod "https://api.github.com/repos/hua0512/rship/releases/latest").tag_name
+$Archive = "rship-$Version-x86_64-pc-windows-msvc.zip"
+Invoke-WebRequest "https://github.com/hua0512/rship/releases/download/$Version/$Archive" -OutFile $Archive
+Expand-Archive $Archive -DestinationPath "$env:LOCALAPPDATA\rship" -Force
+& "$env:LOCALAPPDATA\rship\rship-$Version-x86_64-pc-windows-msvc\rship.exe" --version
+```
+
+</CodeTab>
+</CodeTabs>
+
+<Callout type="tip" title="安装包完整性校验">
+`install.sh` 与 `install.ps1` 在覆盖二进制前都会自动校验 `SHA256SUMS.txt`。如选择手动下载，可使用同一 release tag 下的校验文件核对哈希：
+
+```bash
+curl -fsSLO "https://github.com/hua0512/rship/releases/download/${VERSION}/SHA256SUMS.txt"
+sha256sum -c --ignore-missing SHA256SUMS.txt
+```
+</Callout>
+
+## 连接存储后端
+
+如果机器上已配置 `rclone`，可以直接前往[从 rclone 迁移](/guide/migration)一条命令导入 8 大云盘配置（`rship config import-rclone`），或参考[Google Drive OAuth 5 分钟指南](/providers/gdrive#oauth-20-setup)、[S3 / R2 12 预设](/providers/s3)与 [Dropbox 控制台配置](/providers/dropbox) 获取凭据后直接授权：
+
+```bash
+# Google Drive（桌面 OAuth2 PKCE 本地回环授权）
+rship auth gdrive gdrive --client-id <CLIENT_ID> --client-secret <CLIENT_SECRET>
+
+# Cloudflare R2 / AWS S3 / MinIO（内置 12 个主流服务商预设）
+rship auth s3 r2 \
+  --provider r2 \
+  --bucket my-backups \
+  --region auto \
+  --endpoint https://<ACCOUNT_ID>.r2.cloudflarestorage.com \
+  --access-key-id <AK> \
+  --secret-access-key <SK>
+
+# SSH / SFTP
+rship auth sftp vps --host 10.0.0.5 --user deploy --key-file ~/.ssh/id_ed25519
+
+# 在任意后端之上叠加零知识 STREAM OAE2 客户端加密保险库
+rship auth crypt vault --target r2:encrypted-vault --password "strong-passphrase"
+
+# 测试连通性并查看配额信息
+rship config test r2
+rship about r2:
+```
+
+想要交互式组合加密与密钥环命令？试试[存储后端配置生成器](/providers/)。
+
+## 运行第一次断点续传任务
+
+```bash
+# 最简上手：先用 --dry-run 预览计划，再正式执行首次拷贝
+rship copy ./photos gdrive:backups/photos --dry-run
+rship copy ./photos gdrive:backups/photos
+
+# 生产推荐：开启 Falcon 双通道自适应并发，并硬限制带宽与 16 MiB 缓冲池
+rship copy ./photos gdrive:backups/photos --adaptive --bwlimit 20M --max-buffer-mem 16M
+
+# 带顺序过滤规则、体积/时间范围与删除熔断保护的镜像同步
+rship sync ./workspace r2:workspace --filter-from ./rules.txt --min-size 1K --max-age 30d --max-delete 100
+
+# 零流量云内服务端直接拷贝与重命名
+rship copyto r2:backups/a.bin r2:backups/b.bin
+
+# 安全的单机/云端三树双向同步（默认 keep-both 零数据丢失策略）
+rship bisync ./notes gdrive:notes --conflict-strategy keep-both
+
+# 并发只读一致性校验（对比大小与共同哈希）
+rship check ./photos gdrive:backups/photos --checkers 16
+```
+
+## 安全中断与崩溃恢复
+
+按下 `Ctrl+C`（`SIGINT`）或发送 `SIGTERM` 时，`rship` 会优雅取消在途数据流、将 SQLite WAL 日志刷盘并保留未完成的分片/断点会话，随后以退出码 `130` 打印可直接执行的续传命令：
+
+```bash
+# 查看近期作业记录与可恢复的活动会话
+rship status
+
+# 保留原本全部参数与过滤规则直接断点续传
+rship resume <job-id>
+
+# 清理已放弃的本地暂存分片与远端未提交多段上传
+rship gc
+```
+
+## 启用 Shell 自动补全
+
+```bash
+# Bash / Zsh / Fish / PowerShell / Elvish
+rship completions bash > ~/.local/share/bash-completion/completions/rship
+rship completions zsh > ~/.zfunc/_rship
+rship completions fish > ~/.config/fish/completions/rship.fish
+# PowerShell：追加写入 $PROFILE（若尚未创建配置文件，先执行 New-Item -Force $PROFILE）
+rship completions powershell >> $PROFILE
+```
+
+需要部署到无头 VPS 或 Docker 容器？请继续阅读[无头 VPS、Docker 与密钥环](/guide/deployment)、[双向同步 (Bisync)](/guide/bisync) 或[配置与故障排查](/guide/troubleshooting)。

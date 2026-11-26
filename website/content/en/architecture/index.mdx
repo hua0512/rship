@@ -1,0 +1,55 @@
+---
+title: System Architecture & Invariants
+description: Explore the 7-crate Rust workspace topology and the 6 architectural invariants enforcing <= 64 MiB RSS and zero-duplicate crash recovery.
+section: sdk
+---
+
+`rship` is engineered around **strict architectural invariants** across a permanently lean **7-crate Rust workspace**.
+
+## 7-Crate Workspace Topology
+
+Click any crate below to inspect its responsibilities, invariants, key types, and workspace location:
+
+<ArchitectureGraph />
+
+| Crate | Role |
+| :--- | :--- |
+| **`rship`** | Ergonomic top-level Rust SDK facade (`RshipClient` with lazy `HttpTransport` & `StateActor`, `ClientBuilder`, `TransferBuilder`, `BisyncBuilder`, `TransferTarget`, `ResolvedTarget`, `#[non_exhaustive]` `*RemoteConfig` fluent builders, cached backend registry, shared `config`/`secrets`/`factory`, graceful `shutdown()`, `default = ["local"]`). |
+| **`rship-core`** | Zero-I/O transfer/sync/bisync engine (`engine/run/{mod,streaming,delete}.rs`), `JoinSet` parallel multipart, Falcon adaptive controller, `BufferPool`, `ChunkStrategy`, `FilterSet`, `FailoverPool`, panic-isolated sequenced `TransferEvent`/`EventSink`, `MemoryJournalStore`, `MemorySyncIndex`, `rclone_ini`, `ChaosBackend` DST & universal conformance suite. |
+| **`rship-state`** | Bundled SQLite `StateActor` (`actor/{mod,worker,baselines,delta}.rs`, WAL + `NORMAL` group-commit + `ActiveOpIndex` + graceful `shutdown()`), ephemeral `SqliteSyncIndex`, `DeltaInventoryStore`, cross-platform safe advisory `ProcessLock`. |
+| **`rship-transport`** | Split HTTP/2 Control Plane & HTTP/1.1 Data Plane, `--proxy`, `--ca-cert`, byte-progress stall watchdog, CUBIC adaptive rate limiter, retry quota, write-QPS buckets & shared `oauth` PKCE/refresh engine. |
+| **`rship-crypto`** | `#![forbid(unsafe_code)]` hardware-accelerated (`aws-lc-rs` + `HChaCha20`) STREAM OAE2 seekable 64 KiB `XChaCha20-Poly1305` overlay, Argon2id/HKDF/`zeroize`, SIV base32 filenames. |
+| **`rship-backends`** | Unified feature-gated driver crate (`local`, `gdrive`, `s3` [12 presets], `dropbox`, `gcs`, `azureblob`, `onedrive`, `webdav`, `sftp`) + shared `common` (`rx_to_entry_stream`, `http`, `crc`, `StrictBodyStream`, `ExactDownloadStream`, `google_sa`, `xml`). |
+| **`rship-cli`** | Modular `rship` CLI (`ui.rs` semantic ANSI styling + `ops/` delegating to `RshipClient` + `providers/{mod,bundle,oauth,filters}.rs` `ProviderAdapter` auth/bundle/GC registry + OS Keyring + live TUI). |
+
+## Core Architectural Invariants
+
+### 1. Permit-Bound Zero-Copy Buffers (`<= 64 MiB` RSS)
+- `BufferPool` is gated by a **4 KiB-unit byte semaphore** (`min(25% cgroup_limit, 16 MiB)` default, explicit `--max-buffer-mem` override).
+- Streaming buffers (`256 KiB`) are wrapped in `PooledSlice` and yielded via **`Bytes::from_owner(PooledSlice)`**, holding semaphore permits until sockets or disks finish draining.
+- **Anti-deadlock invariant**: no task may hold more than one `PooledSlice` or call `acquire()` while already holding one.
+- Work admission is strictly pull-driven (`mpsc::channel(256)` → fixed worker pool). SQLite enforces `PRAGMA mmap_size = 0; temp_store = FILE;` with bounded page caches (`-4096` for `journal.db`, `-8192` for ephemeral `SqliteSyncIndex`).
+
+### 2. Decoupled I/O Slices vs. Protocol Chunks
+- *I/O Stream Slices* (`256 KiB` pooled) stream from `SeekableSource::read_at` or `RemoteRangeReadable` into a single HTTP request body with zero extra API calls.
+- *Protocol Chunks* (`256 MiB` GDrive aligned to `256 KiB`, tiered `16–512 MiB` S3 respecting the 10,000-part limit, `4 MiB` Dropbox, `320 KiB` OneDrive, and single-shot fast paths `<= 5 MiB` GDrive / `<= 16 MiB` S3) minimize QPS and PUT fees at **zero extra RAM cost**.
+
+### 3. Write-Ahead Operation Journal & Ambiguous Commit Reconciliation
+- Every transfer persists its `Intent` (`op_id`, source freshness fingerprint, destination precondition, upload geometry, remote idempotency key) to SQLite WAL **before** mutating remote state.
+- Before final commit, `completing` intent is persisted and source freshness is re-verified (rejecting live TOCTOU / same-length middle edits). On ambiguous failures (`404`/`NoSuchUpload`/power loss), destination identity (`fileId` / `x-amz-meta-rship-op-id`) is reconciled before restarting—guaranteeing zero duplicates and zero silent corruption.
+
+### 4. Namespace Identity & Three-Tree Bisync (Unison + Dropbox Canopy)
+- Every observed `Entry` retains `(node_id, parent_id, raw_path, nfc_path)`.
+- Ephemeral `SqliteSyncIndex` uses surrogate row IDs and non-unique `nfc_path` / `fold_path` indexes to surface NFC/case collisions explicitly without silent overwrites.
+- Dual-side `sync_baseline` solves S3 `LastModified`/`ETag` false diffs and powers Three-Tree `bisync` with zero-data-loss `keep-both` conflict copies.
+- **Observation Completeness Gate**: any partial listing error strictly blocks all destination deletions (`--delete-after` default + `--max-delete` circuit breaker).
+
+### 5. OSDI-2014 Crash-Consistent Local Publication & Fast Copy
+- OS-native local fast copy (`CopyFileExW` / `copy_file_range` / `fclonefileat` for large files; single-syscall `read_exact` + Windows in-handle `SetFileInformationByHandle(FileRenameInfo)` atomic staging for small files).
+- `UploadTopology::ParallelParts` enables multi-stream cloud downloads and 4-part parallel OAE2 writes (`32 MiB` parts with CRC32C power-loss resume manifest).
+- Bijective `EncodingLayer` executes before Windows `\\?\` / `\\?\UNC\` verbatim path conversion; Unix walkers skip FIFOs/sockets/devices via `symlink_metadata()`.
+
+### 6. Split-Plane Transport & Protocol-Aware Recovery
+- **Control Plane**: multiplexed HTTP/2 with `rustls-tls-native-roots`, `--ca-cert`, and `--proxy`.
+- **Data Plane**: `.http1_only()` by default (preventing HTTP/2 stream coalescing across bulk uploads and unbounded `h2` receive slabs) protected by a byte-progress idle stall watchdog.
+- Recovery lives inside protocol-aware state machines backed by proactive `--tpslimit`, CUBIC adaptive limiting, and retry-quota buckets.

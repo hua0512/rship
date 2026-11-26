@@ -1,0 +1,48 @@
+---
+title: Dropbox
+description: Dropbox API v2 driver with 4 MiB-aligned upload sessions, native dropbox_content_hash verification, offline PKCE tokens, and copy_v2.
+section: providers
+---
+
+The `dropbox` backend (`backend-dropbox`) implements Dropbox API v2 with `token_access_type=offline` PKCE loopback auth, strict **4 MiB upload-session geometry** matching Dropbox's content hash tree, and native `files/copy_v2` server-side copy.
+
+## Dropbox App Console Setup
+
+1. Open the [Dropbox App Console](https://www.dropbox.com/developers/apps) and click **Create app**.
+2. Choose **Scoped access**, then pick **Full Dropbox** (access entire account) or **App folder** (isolated folder), give the app a unique name, and create it.
+3. Under the app's **Permissions** tab, enable the required scopes and click **Submit**:
+   - `account_info.read` (required by `rship about`)
+   - `files.metadata.read` & `files.metadata.write`
+   - `files.content.read` & `files.content.write`
+4. Under **Settings** -> **OAuth 2** -> **Redirect URIs**, note that `rship auth dropbox` binds an ephemeral loopback callback `http://127.0.0.1:<port>/callback` (`token_access_type=offline` with PKCE). Add your redirect URI if required by your app policy, and copy the **App key** (`--client-id`).
+5. *Migrating from rclone?* Skip app setup and import existing credentials directly with `rship config import-rclone`.
+
+## Setup
+
+```bash
+# Desktop OAuth2 PKCE login with offline refresh token
+rship auth dropbox dbx \
+  --client-id "<DROPBOX_APP_KEY>" \
+  --root-path /backups
+
+# Optional: lock refresh token in OS Keyring
+rship auth keyring-migrate
+rship about dbx:
+```
+
+## Flags Reference (`rship auth dropbox`)
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | Logical remote name (e.g. `dropbox`, `work-dbx`) |
+| `--client-id` | Interactive prompt | Dropbox App Key from the Dropbox App Console |
+| `--client-secret` | None | Optional App Secret (omit for pure public Desktop PKCE apps) |
+| `--root-path` | `/` | Root folder path inside Dropbox (e.g. `/backups`) |
+| `--access-token` | None | Direct bearer token for non-interactive CI / testing |
+
+## Protocol Internals
+
+- **4 MiB block-aligned sessions**: Files `<= 4 MiB` upload via `/files/upload`. Larger files use `upload_session/start` + `append_v2` + `finish` with `48 MiB` default chunks (`12 × 4 MiB`, below Dropbox's `148 MiB` safe session limit). Every non-final chunk stays strictly aligned to `4 MiB`.
+- **`incorrect_offset` crash-resume recovery**: If an upload session restarts with an offset mismatch after a crash or network drop, `rship` reconciles the server's reported `correct_offset` directly and resumes from exact block boundaries without duplicating data.
+- **Native `dropbox_content_hash`**: Computes Dropbox's 4 MiB-block SHA-256 tree natively so `rship check` and dedupe verify bit-exact integrity without re-downloading files.
+- **Server-side copy & batch delete**: Uses `files/copy_v2` for fast remote copies and batched `delete_batch` calls during `rship sync` / `delete`.

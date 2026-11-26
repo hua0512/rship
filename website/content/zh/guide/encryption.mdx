@@ -1,0 +1,63 @@
+---
+title: 客户端加密 (STREAM OAE2)
+description: 零知识、硬件加速的 XChaCha20-Poly1305 加密叠加层，支持确定性 SIV 文件名加密与 64 KiB 随机区间解密。
+section: core
+---
+
+`rship-crypto` 实现了**零知识、`#![forbid(unsafe_code)]`、支持随机定位读取的加密叠加层**，可透明包装任意本地或云端存储后端。
+
+## 交互式字节区间透视
+
+由于 STREAM OAE2 将文件切分为彼此独立的 **64 KiB** 认证加密块，`rship cat` 可通过 HTTP `Range` 请求直接定位至数 GB 加密归档的任意偏移量，只拉取所需密文块：
+
+<Oae2Xray />
+
+## 密码学设计
+
+- **认证加密**：采用 64 KiB 可随机定位的 **STREAM OAE2** 分块结构与 **`XChaCha20-Poly1305`** 算法（每块 192-bit nonce 与 128-bit Poly1305 认证标签）。
+- **硬件加速**：底层由 `aws-lc-rs`（AVX2/NEON）驱动，每文件仅派生一次 `HChaCha20` 子密钥，并零分配原地完成 AEAD 加解密。
+- **密钥派生与内存清理**：口令经 **Argon2id + HKDF-SHA256** 派生主密钥，释放时通过 `zeroize` 自动清零敏感内存。
+- **文件名加密**：确定性 base32 **SIV 文件名加密**（`--filename-encryption standard`，或设为 `off` 保留明文文件名）。
+- **并发多段加密写入**：本地 NVMe OAE2 加密吞吐达 **1,214 MiB/s**、峰值仅 **52.9 MiB RSS**（比 `rclone crypt` **快 4.07 倍**、内存低 **1.5 倍**）；1 Gbps 真实 Google Drive 实测加密上传最高 **12.1 MiB/s**（快 **1.35–1.58×**、内存低 **3.1×**），4 分片并行解密下载最高 **26.2 MiB/s**（快 **1.37–1.95×**、内存低 **1.6×**）。
+
+## 在任意后端上创建加密金库
+
+```bash
+# 用 Argon2id 口令派生密钥包装 Cloudflare R2 前缀
+rship auth crypt vault \
+  --target r2:encrypted-vault \
+  --password "strong-passphrase"
+
+# 或直接指定 256-bit 十六进制主密钥（64 位十六进制字符）
+rship auth crypt vault-hex \
+  --target gdrive:vault \
+  --key-hex "<64-HEX-CHARS>" \
+  --filename-encryption standard
+
+# 将口令或主密钥迁入系统密钥环
+rship auth keyring-migrate
+```
+
+## 流式备份与随机区间解密
+
+```bash
+# 边加密边将本地目录拷贝至云端金库
+rship copy ./secrets vault:2026 --tui
+
+# 将 stdin 数据流直接加密写入云端归档
+tar -cf - ./docs | rship rcat vault:backups/docs.tar
+
+# 从 1 MiB 偏移处仅解密 4 KiB 并直接输出到 stdout
+rship cat vault:backups/docs.tar --offset 1048576 --count 4096 | xxd
+
+# 查看解密后的目录树并核对文件大小
+rship tree vault: -s -L 3
+```
+
+<Callout type="info" title="与 rclone crypt 的兼容性说明">
+STREAM OAE2（`XChaCha20-Poly1305` + SIV 文件名）专为硬件加速的字节区间定位与防分块重排认证设计，因此**与 `rclone crypt`（`XSalsa20-Poly1305` + EME）在密文格式上不兼容**。复用既有加密存储桶前，请先阅读[从 rclone 迁移](/guide/migration)。
+</Callout>
+
+<Callout type="warning" title="妥善保管口令与 Salt">
+所有加解密均在本地完成，`rship` 绝不会向任何云厂商发送口令、Salt 或主密钥。若同时遗失口令/主密钥与配置备份，密文文件将无法恢复。
+</Callout>

@@ -1,0 +1,158 @@
+---
+title: Quick Start & Installation
+description: Install the self-contained rship binary, connect a cloud remote, and run your first crash-resumable transfer in minutes.
+section: getting-started
+---
+
+`rship` ships as a single self-contained native binary and as a modular, feature-gated Rust SDK crate.
+
+## Installation
+
+Install the latest prebuilt binary cleanly via the universal installer script (automatically resolves the latest version from [GitHub Releases](https://github.com/hua0512/rship/releases/latest), detects your OS/architecture and libc — using `gnu` on Linux hosts with `glibc >= 2.28` and static `musl` on Alpine/older systems — and verifies `SHA256SUMS.txt`), or download an archive manually for Linux glibc ≥ 2.28 (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`), Linux static musl (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`), macOS (`aarch64-apple-darwin`, `x86_64-apple-darwin`), or Windows (`x86_64-pc-windows-msvc`).
+
+<CodeTabs>
+<CodeTab label="macOS / Linux">
+
+```bash
+# Resolves latest GitHub release, auto-detects gnu (glibc >= 2.28) vs musl & verifies SHA256SUMS.txt
+curl -fsSL https://hua0512.github.io/rship/install.sh | sh
+
+# Optional: pin a version, libc (gnu|musl), or custom directory
+# curl -fsSL https://hua0512.github.io/rship/install.sh \
+#   | RSHIP_VERSION=v0.1.0 RSHIP_LIBC=musl RSHIP_INSTALL_DIR=/usr/local/bin sh
+```
+
+</CodeTab>
+<CodeTab label="Windows (PowerShell)">
+
+```powershell
+# Resolves latest GitHub release, verifies SHA256, and adds rship to user PATH
+irm https://hua0512.github.io/rship/install.ps1 | iex
+
+# Optional: pin a release version first
+# $env:RSHIP_VERSION = "v0.1.0"
+# irm https://hua0512.github.io/rship/install.ps1 | iex
+```
+
+</CodeTab>
+<CodeTab label="Manual (Linux / macOS)">
+
+```bash
+VERSION="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/hua0512/rship/releases/latest | sed 's|.*/||')"
+OS="$(uname -s)" ARCH="$(uname -m)"
+# Use -musl instead of -gnu on Alpine / minimal containers / glibc < 2.28
+case "${OS}:${ARCH}" in
+  Linux:x86_64|Linux:amd64)    TARGET="x86_64-unknown-linux-gnu" ;;
+  Linux:aarch64|Linux:arm64)   TARGET="aarch64-unknown-linux-gnu" ;;
+  Darwin:arm64|Darwin:aarch64) TARGET="aarch64-apple-darwin" ;;
+  Darwin:x86_64)               TARGET="x86_64-apple-darwin" ;;
+esac
+curl -fsSLO "https://github.com/hua0512/rship/releases/download/${VERSION}/rship-${VERSION}-${TARGET}.tar.gz"
+tar -xzf "rship-${VERSION}-${TARGET}.tar.gz"
+sudo install -m 755 "rship-${VERSION}-${TARGET}/rship" /usr/local/bin/rship
+rship --version
+```
+
+</CodeTab>
+<CodeTab label="Manual (Windows)">
+
+```powershell
+$Version = (Invoke-RestMethod "https://api.github.com/repos/hua0512/rship/releases/latest").tag_name
+$Archive = "rship-$Version-x86_64-pc-windows-msvc.zip"
+Invoke-WebRequest "https://github.com/hua0512/rship/releases/download/$Version/$Archive" -OutFile $Archive
+Expand-Archive $Archive -DestinationPath "$env:LOCALAPPDATA\rship" -Force
+& "$env:LOCALAPPDATA\rship\rship-$Version-x86_64-pc-windows-msvc\rship.exe" --version
+```
+
+</CodeTab>
+</CodeTabs>
+
+<Callout type="tip" title="Checksum Verification">
+Both `install.sh` and `install.ps1` verify `SHA256SUMS.txt` automatically before installing. For manual downloads, verify integrity against the same release tag:
+
+```bash
+curl -fsSLO "https://github.com/hua0512/rship/releases/download/${VERSION}/SHA256SUMS.txt"
+sha256sum -c --ignore-missing SHA256SUMS.txt
+```
+</Callout>
+
+## Connect a Remote
+
+Already using `rclone`? Jump to [Migrating from rclone](/guide/migration) to import 8 cloud backends in a single command (`rship config import-rclone`), or authorize a backend directly (see [5-minute Google Drive OAuth setup](/providers/gdrive#oauth-20-setup), [S3 / R2 12 presets](/providers/s3), or [Dropbox App Console](/providers/dropbox) for obtaining credentials):
+
+```bash
+# Google Drive (Desktop OAuth2 PKCE loopback)
+rship auth gdrive gdrive --client-id <CLIENT_ID> --client-secret <CLIENT_SECRET>
+
+# Cloudflare R2 / AWS S3 / MinIO (12 presets built in)
+rship auth s3 r2 \
+  --provider r2 \
+  --bucket my-backups \
+  --region auto \
+  --endpoint https://<ACCOUNT_ID>.r2.cloudflarestorage.com \
+  --access-key-id <AK> \
+  --secret-access-key <SK>
+
+# SSH / SFTP
+rship auth sftp vps --host 10.0.0.5 --user deploy --key-file ~/.ssh/id_ed25519
+
+# Zero-knowledge STREAM OAE2 encrypted vault wrapping any backend
+rship auth crypt vault --target r2:encrypted-vault --password "strong-passphrase"
+
+# Verify connectivity & inspect storage quota
+rship config test r2
+rship about r2:
+```
+
+Need a guided config generator? Try the interactive [Provider Composer](/providers/).
+
+## Run Your First Crash-Resumable Transfer
+
+```bash
+# Minimal first copy (preview first with --dry-run, then run)
+rship copy ./photos gdrive:backups/photos --dry-run
+rship copy ./photos gdrive:backups/photos
+
+# Tuned transfer with Falcon adaptive concurrency, bandwidth cap, and 16 MiB RAM budget
+rship copy ./photos gdrive:backups/photos --adaptive --bwlimit 20M --max-buffer-mem 16M
+
+# Mirror sync with ordered filters, size/age bounds, and delete circuit breaker
+rship sync ./workspace r2:workspace --filter-from ./rules.txt --min-size 1K --max-age 30d --max-delete 100
+
+# Zero-bandwidth server-side copy & rename on the same cloud
+rship copyto r2:backups/a.bin r2:backups/b.bin
+
+# Safe Three-Tree bidirectional sync (default: keep-both zero-data-loss conflicts)
+rship bisync ./notes gdrive:notes --conflict-strategy keep-both
+
+# Concurrent read-only integrity check (size + common hash)
+rship check ./photos gdrive:backups/photos --checkers 16
+```
+
+## Interrupt & Resume Safely
+
+Pressing `Ctrl+C` (`SIGINT`) or sending `SIGTERM` cancels in-flight streams cleanly, flushes the SQLite WAL journal, preserves active multipart/resumable sessions, and exits `130` with a ready-to-run resume command:
+
+```bash
+# List recent jobs and active resumable sessions
+rship status
+
+# Resume with all original persisted flags & filters intact
+rship resume <job-id>
+
+# Garbage-collect abandoned remote multipart/resumable staging sessions
+rship gc
+```
+
+## Enable Shell Completions
+
+```bash
+# Bash / Zsh / Fish / PowerShell / Elvish
+rship completions bash > ~/.local/share/bash-completion/completions/rship
+rship completions zsh > ~/.zfunc/_rship
+rship completions fish > ~/.config/fish/completions/rship.fish
+# PowerShell: append to $PROFILE (run `New-Item -Force $PROFILE` first if missing)
+rship completions powershell >> $PROFILE
+```
+
+Running on a headless VPS or Docker container? See [Headless VPS, Docker & Keyring](/guide/deployment), explore [Bidirectional Sync (bisync)](/guide/bisync), or check [Configuration & Troubleshooting](/guide/troubleshooting).

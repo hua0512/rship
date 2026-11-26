@@ -1,0 +1,67 @@
+---
+title: Migrating from rclone
+description: Import existing rclone.conf remotes in one command and compare rclone flags, safety defaults, and memory budgets against rship.
+section: getting-started
+---
+
+`rship` is designed as a drop-in, low-memory replacement for `rclone`. You can migrate existing cloud credentials without re-authorizing and adopt safer defaults immediately.
+
+## Interactive Command Translator
+
+Switch scenarios below to inspect how common `rclone` workflows map to `rship`—and what durability or safety upgrades you gain automatically:
+
+<RcloneTranslator />
+
+## One-Command `rclone.conf` Import
+
+`rship` natively parses INI configuration files across **8 backends**: **Google Drive**, **S3**, **OneDrive**, **Dropbox**, **GCS**, **Azure Blob**, **WebDAV**, and **SFTP**. AES-256-CTR obscured passwords in `rclone.conf` are automatically revealed and written to `config.toml` with restrictive `0600` permissions.
+
+```bash
+# Preview what will be imported without touching disk
+rship config import-rclone --dry-run
+
+# Import from the default rclone location (or pass an explicit file path)
+rship config import-rclone ~/.config/rclone/rclone.conf
+
+# Inspect active remotes (secrets are redacted by default)
+rship config show
+
+# Optional: lock imported secrets into your OS Keyring
+rship auth keyring-migrate
+```
+
+<Callout type="tip" title="Zero-Conversion Direct Execution">
+If you are embedding the [Rust SDK](/sdk/embedding) or migrating an existing container that already mounts `rclone.conf`, `RshipClient::builder().rclone_conf("/app/config/rclone.conf")` can also read `rclone.conf` directly without running `import-rclone` first.
+</Callout>
+
+<Callout type="warning" title="Not Wire-Compatible with rclone crypt">
+`rship` implements its own seekable **64 KiB STREAM OAE2** format (`XChaCha20-Poly1305` + deterministic SIV filenames) and **cannot decrypt existing `rclone crypt` buckets** (`XSalsa20-Poly1305` + EME) in place. `import-rclone` transfers your 8 underlying cloud remotes; to adopt `rship` encryption, copy decrypted data into a fresh `rship` vault instead of pointing a `crypt` remote at legacy `rclone crypt` ciphertexts.
+</Callout>
+
+## Key Behavioral Upgrades vs `rclone`
+
+| Area | `rclone` Default | `rship` Default & Safeguard |
+| :--- | :--- | :--- |
+| **Peak Memory** | Scales steeply with `--transfers` & buffer chunks (up to `315 MiB` on 4-stream GDrive upload) | Hard-capped `BufferPool` (`<= 64 MiB` RSS; `16–22 MiB` typical on live cloud transfers) |
+| **Crash Recovery** | Restarts interrupted parts/uploads on `SIGKILL` | SQLite WAL `Intent` journal + ambiguous commit reconciliation (`0` duplicates) |
+| **Sync Deletion Guard** | Partial listing errors can risk unsafe deletions without extra flags | **Observation Completeness Gate** blocks all deletions if listing fails; `--delete-after` + `--max-delete` |
+| **Two-Way Conflicts** | Configurable per command | Three-Tree `bisync` defaults to `keep-both` so conflicting edits never overwrite silently |
+| **Google Drive 750 GiB Cap** | Retries `userRateLimitExceeded` repeatedly | `--drive-stop-on-upload-limit` fails fast with `QuotaExceeded` for clean `FailoverPool` rotation |
+| **Binary Footprint** | Go runtime binary | Single self-contained Rust binary |
+
+## When to Choose `rship` vs `rclone`
+
+`rship` focuses deliberately on high-reliability transfers across 10 core protocols rather than trying to replicate every `rclone` subproject:
+
+- **Choose `rship` when**: you run on tight memory budgets (`<= 64 MiB` RSS on small VPS/Docker hosts), need bit-exact `SIGKILL` crash-resume via SQLite WAL, rely on zero-data-loss `keep-both` Three-Tree `bisync`, want seekable HTTP `Range` client-side encryption, or want an embeddable Tokio Rust SDK (`rship`).
+- **Stay on `rclone` when**: you depend on `rclone mount` (FUSE / WinFsp filesystem mounting), `rcd` Web GUI / remote-control daemon, in-place compatibility with legacy `rclone crypt` vaults, or niche cloud backends outside `rship`'s 10 built-in drivers.
+
+## Production Headless Mapping
+
+For automated scripts replacing `rclone` invocations in CI or systemd services:
+
+| Operation | `rship` Equivalent |
+| :--- | :--- |
+| **Idempotent `mkdir`** | `rship --config /app/rship.toml --state-dir /app/state --tpslimit 8 mkdir gdrive:archive/2026` |
+| **Single-file `moveto`** | `rship --config ... --drive-stop-on-upload-limit --tpslimit 8 moveto /data/manifest.json gdrive:archive/manifest.json --bwlimit 20M --chunk-size 256M --retries 1 --json` |
+| **Batch `--files-from` `move`** | `rship --config ... --drive-stop-on-upload-limit move /data gdrive:archive --files-from /tmp/files.txt --no-traverse --bwlimit 20M --json --json-progress --stats 1s` |

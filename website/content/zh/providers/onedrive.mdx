@@ -1,0 +1,57 @@
+---
+title: OneDrive 与 SharePoint
+description: Microsoft Graph v1.0 驱动，支持个人 OneDrive、OneDrive for Business 与 SharePoint 文档库及 320 KiB 对齐上传会话。
+section: providers
+---
+
+`onedrive` 后端（`backend-onedrive`）基于 Microsoft Graph API v1.0，支持**个人 Microsoft 账号**、**OneDrive for Business** 以及 **SharePoint 文档库**（通过 `--drive-id` 指定），采用 Entra ID OAuth 2.0 桌面 PKCE 本地回环授权。
+
+## 配置示例
+
+<CodeTabs>
+<CodeTab label="个人 / 企业 OneDrive">
+
+```bash
+# 通过本地回环 PKCE 申请 Files.ReadWrite.All offline_access User.Read 权限
+rship auth onedrive od \
+  --client-id "<AZURE_APPLICATION_CLIENT_ID>"
+
+rship about od:
+```
+
+</CodeTab>
+<CodeTab label="SharePoint 文档库">
+
+```bash
+# 指定目标 Microsoft Graph Drive ID
+rship auth onedrive sp-docs \
+  --client-id "<AZURE_APPLICATION_CLIENT_ID>" \
+  --drive-id "b!Xyz123..."
+
+rship ls sp-docs:
+```
+
+</CodeTab>
+</CodeTabs>
+
+## 参数参考（`rship auth onedrive`）
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | 远端逻辑名称（如 `onedrive`、`sp-docs`） |
+| `--client-id` | 交互输入 | Azure 应用注册（Entra ID）的应用程序 `client_id` |
+| `--client-secret` | 无 | 可选的客户端密钥（公开移动/桌面 PKCE 应用无需填写） |
+| `--drive-id` | `/me/drive` | SharePoint 文档库对应的 Microsoft Graph `drive_id` |
+| `--scope` | `Files.ReadWrite.All offline_access User.Read` | 自定义 Graph OAuth 权限范围字符串 |
+| `--access-token` | 无 | 直接传入 Graph Bearer 令牌，用于非交互式自动化场景 |
+
+<Callout type="info" title="Entra ID 重定向 URI">
+在 Azure 应用注册的 **Authentication → Mobile and desktop applications** 中添加 `http://localhost`（或启用本地回环重定向），即可在 Linux、macOS 和 Windows 上正常完成桌面 PKCE 授权。
+</Callout>
+
+## 协议实现细节
+
+- **严格 320 KiB 对齐的上传会话**：不超过 `4 MiB` 的文件直接上传；更大的文件创建 Graph 上传会话，以 `10 MiB`（`32 × 320 KiB`）对齐分片流式写入（低于 Graph 单请求 `60 MiB` 硬上限）。
+- **`nextExpectedRanges` 崩溃续传**：直接向 Graph 查询活动上传会话 URL，按服务端返回的 `nextExpectedRanges` 字节偏移精确续传。
+- **异步服务端拷贝**：同驱动器内拷贝直接调用 Microsoft Graph 异步拷贝接口，并轮询 monitor URL 直至提交完成。
+- **rclone 迁移**：运行 `rship config import-rclone` 即可导入已有 OneDrive 配置（`token`、`drive_id`、`drive_type`、`client_id`、`client_secret`）。

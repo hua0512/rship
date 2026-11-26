@@ -1,0 +1,72 @@
+---
+title: Google Cloud Storage (GCS)
+description: GCS JSON API v1 原生驱动，支持服务账号 RS256 JWT、OAuth2 PKCE、匿名公开存储桶、256 KiB 对齐断点续传与服务端 rewrite 拷贝。
+section: providers
+---
+
+`gcs` 后端（`backend-gcs`）直接对接 Google Cloud Storage JSON API v1，支持三种认证方式——**服务账号 JSON（RS256 JWT）**、**桌面端 OAuth 2.0 PKCE** 以及**匿名访问公开存储桶**，同时支持指定自定义端点以对接 `fake-gcs-server` 等本地模拟器。
+
+## 配置示例
+
+<CodeTabs>
+<CodeTab label="服务账号 (推荐)">
+
+```bash
+rship auth gcs gcs-prod \
+  --bucket my-archive \
+  --prefix 2026/ \
+  --storage-class NEARLINE \
+  --service-account-file ./gcp-sa.json
+
+rship ls gcs-prod:
+```
+
+</CodeTab>
+<CodeTab label="OAuth2 PKCE / 公开存储桶">
+
+```bash
+# 交互式桌面端 PKCE 登录
+rship auth gcs gcs-personal \
+  --bucket my-bucket \
+  --client-id "<CLIENT_ID>" \
+  --client-secret "<CLIENT_SECRET>" \
+  --scope read_write
+
+# 匿名访问公开 GCS 存储桶
+rship auth gcs gcp-public --bucket public-datasets --anonymous
+```
+
+</CodeTab>
+<CodeTab label="本地模拟器">
+
+```bash
+rship auth gcs gcs-dev \
+  --bucket test-bucket \
+  --endpoint http://127.0.0.1:4443 \
+  --anonymous
+```
+
+</CodeTab>
+</CodeTabs>
+
+## 参数参考 (`rship auth gcs`)
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | 远端逻辑名称（如 `gcs`、`gcp-archive`） |
+| `--bucket` | 可选 | 默认存储桶；留空时可通过 `remote:bucket/path` 访问不同存储桶 |
+| `--prefix` | 空 | 存储桶内对象前缀 |
+| `--project-number` | 无 | 可选 Google Cloud 项目编号 |
+| `--storage-class` | 存储桶默认 | `STANDARD`、`NEARLINE`、`COLDLINE` 或 `ARCHIVE` |
+| `--service-account-file` | 无 | GCP 服务账号 JSON 密钥文件路径 |
+| `--impersonate` | 无 | 域内委派模拟的主体邮箱（`sub`） |
+| `--client-id` / `--client-secret` | 无 | 用于 PKCE 流程的 Google OAuth 2.0 桌面端凭据 |
+| `--scope` | `full` | 别名 `full`、`read_write`、`read_only`、`cloud-platform` 或完整 scope URL |
+| `--anonymous` | `false` | 无需凭据访问公开存储桶 |
+| `--endpoint` | GCS 默认值 | 自定义根 URL（自动派生 `/storage/v1` 与 `/upload/storage/v1`） |
+
+## 协议细节
+
+- **分片对齐与崩溃续传**：`<= 8 MiB` 的文件走单次 `uploadType=multipart`；更大对象采用 `256 KiB` 对齐的断点续传会话（默认分片 `16 MiB` = `64 × 256 KiB`）。
+- **严格 RFC 3986 路径编码**：对 GCS JSON 路由 `/b/{bucket}/o/{object}` 中的 `/`、`+`、`#`、`?`、`%`、空格及多字节 UTF-8 路径段精确编码。
+- **校验和与服务端重写**：校验对象原生的 `MD5` 与 `CRC32C` 哈希，同 GCS 内部拷贝直接调用 `rewriteTo` 即时完成。

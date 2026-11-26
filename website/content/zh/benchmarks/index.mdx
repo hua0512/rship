@@ -1,0 +1,62 @@
+---
+title: 性能基准与验收测试
+description: 在 1 Gbps Linux VPS（真实 Google Drive）与 Windows 11 NVMe 上与 rclone 同台实测吞吐与峰值 RSS，附交互式 VPS 内存悬崖模拟器。
+section: performance
+---
+
+全部数据均经过 MD5 逐字节校验，采用默认 **`rship 0.1.0`** Release 构建（调优后的 `mimalloc` v3 + `no_thp` + `2..=8` 有界 Tokio 工作线程，**全部云端与本地场景峰值 RSS 严格控制在 64 MiB 以内**）：
+
+- **1 Gbps Linux VPS（真实 Google Drive）**：Debian 13 · 4 vCPU AMD EPYC · 内存盘 `tmpfs`（零磁盘瓶颈）· Linux 内核 `wait4` `ru_maxrss` 实测 —— **`rship 0.1.0`** 对比同机同账号的 **`rclone v1.60.1-DEV`**。
+- **本地 Windows 11 NVMe**：交替轮次中位数 · Win32 `PeakWorkingSetSize` —— **`rship 0.1.0`** 对比 **`rclone v1.76.0`**。
+
+## VPS 内存悬崖模拟器
+
+选择 VPS 容器内存预算（`128 MiB`、`256 MiB`、`512 MiB`），在 1 Gbps 真实 Google Drive 与本地 NVMe 负载间切换查看峰值 RSS 与吞吐速度：
+
+<VpsMemoryLab />
+
+## 真实 Google Drive（1 Gbps Linux VPS）
+
+| 测试场景 | `rship 0.1.0`（调优 `mimalloc`） | `rclone v1.60.1-DEV` | 对比优势 |
+| :--- | :--- | :--- | :--- |
+| **128 MiB 单文件上传** | **最高 27.6 MiB/s** · **29.4 MiB RSS** | `17.9 MiB/s` · `75.8 MiB`（默认 8M）<br />`23.2 MiB/s` · `132.5 MiB`（`--drive-chunk-size 64M`） | **最高快 1.54× · RSS 低 2.6–4.5×** |
+| **128 MiB 4 路并发下载** | **最高 77.1 MiB/s**（约 647 Mbps） · **31.6 MiB RSS** | `14.5–21.1 MiB/s` · `55.6–59.6 MiB`（`--multi-thread-streams 4`） | **最高快 3.66× · RSS 低 1.8× · MD5 一致** |
+| **4 × 64 MiB 并行上传（`--transfers 4`）** | **最高 32.1 MiB/s** · **54.8 MiB RSS** | `27.9 MiB/s` · `149.4 MiB`（默认 8M）<br />`28.9 MiB/s` · `374.5 MiB`（`--drive-chunk-size 64M`） | **RSS 低 2.7–6.8× · 严格 `< 64 MiB`** |
+| **64 MiB Crypt 加密上传（STREAM OAE2）** | **11.2–12.1 MiB/s** · **47.1 MiB RSS** | `7.6–8.3 MiB/s` · `147.9 MiB`（`64M`） | **快 1.35–1.58× · RSS 低 3.1×** |
+| **64 MiB Crypt 解密下载（4 分片 OAE2）** | **13.0–26.2 MiB/s** · **45.5 MiB RSS** | `9.5–13.4 MiB/s` · `70.8 MiB` | **快 1.37–1.95× · RSS 低 1.6× · MD5 一致** |
+| **热态增量 Sync（`changes.list`）** | **285–304 ms** · **31.1 MiB RSS** | `1,239–1,305 ms` · `52.7 MiB` | **快 4.1–4.6× · RSS 低 1.7×** |
+| **16 MiB 崩溃续传** | 在 4.0 MiB 处 `SIGKILL` → **逐字节一致**续传 | — | **零重复文件** |
+
+## 本地 Windows 11 NVMe 与规模验收
+
+| 测试场景 | `rship 0.1.0`（调优 `mimalloc`） | `rclone v1.76.0` | 对比优势 |
+| :--- | :--- | :--- | :--- |
+| **本地 1 GiB 拷贝（NVMe）** | **905 ms**（`1,131 MiB/s`） · **17.5 MiB RSS** | `1,323 ms`（`774 MiB/s`） · `64.7 MiB RSS` | **快 1.46× · RSS 低 3.7×** |
+| **本地 1 GiB 硬件 `hashsum crc32c`** | **230 ms**（`4,448 MiB/s`） · **14.6 MiB RSS** | `306 ms`（`3,350 MiB/s`） · `46.7 MiB RSS` | **快 1.33× · RSS 低 3.2×** |
+| **本地 1 GiB 加密写入（STREAM OAE2）** | **844 ms**（`1,214 MiB/s`） · **52.9 MiB RSS**（解密 `1,100 MiB/s` · `63.1 MiB`） | `3,436 ms`（`298 MiB/s`） · `79.7 MiB RSS` | **快 4.07× · RSS 低 1.5×** |
+| **本地 5,000 × 2 KiB 小文件拷贝（`--transfers 16`）** | **1,435 ms** · **26.7 MiB RSS** | `2,205 ms` · `61.8 MiB RSS` | **快 1.54× · RSS 低 2.3×** |
+| **本地 5,000 文件热态 Sync** | **27.6 ms** · **26.3 MiB RSS** | `132.0 ms` · `65.8 MiB RSS` | **快 4.78× · RSS 低 2.5×** |
+| **本地 5,000 文件热态 Bisync（`--transfers 16`）** | **42.5 ms** · **25.3 MiB RSS** | `206.9 ms` · `58.9 MiB RSS` | **快 4.87× · RSS 低 2.3×** |
+| **本地 5,000 文件校验 Check（`--checkers 8`）** | **215 ms** · **23.5 MiB RSS** | `318 ms` · `67.3 MiB RSS` | **快 1.48× · RSS 低 2.9×** |
+| **本地 5,000 文件只读 `ls -r`（惰性零 DB）** | **23.7 ms** · **15.5 MiB RSS**（零 SQLite DB 创建） | `103.4 ms` · `51.1 MiB RSS` | **快 4.36× · RSS 低 3.3×** |
+| **1,000,000 行同步 Diff（`SqliteSyncIndex`）** | **1.55 s**（Release） · **25.2 MiB RSS** | — | **仅占 64 MiB 上限 `~39%`（系统分配器 `16.6 MiB`）** |
+
+<Callout type="info" title="rship 如何在默认启用 mimalloc 下全场景稳控 64 MiB RSS">
+`rship-cli` 为 `mimalloc` v3 开启了 `no_thp`（Linux 回收粒度从 2 MiB 降至 64 KiB），启动时自动设置低 RSS 参数（`arena_eager_commit=0`、`purge_decommits=1`、`purge_delay=10ms`、`arena_purge_mult=2`、`page_reclaim_on_free=1`，均支持 `MIMALLOC_*` 环境变量覆盖），并将 Tokio 异步线程封顶在 `2..=8`、本地写入队列收紧至 3 帧。如需进一步使用平台系统分配器，可通过 `--no-default-features --features all-backends` 编译。
+</Callout>
+
+## 本地复现测试
+
+```bash
+# 标准量化验收套件（16 并发 RSS <= 64 MiB、100k 行 SQLite RSS、10 GiB GDrive 规划）
+cargo test --release -p rship-cli --test acceptance_benchmarks -- --nocapture
+
+# 完整 1,000,000 行（500k 源端 + 500k 目标端）SQLite SyncIndex RSS 验证（默认调优 mimalloc）
+cargo test --release -p rship-cli --test acceptance_benchmarks \
+  acceptance_sqlite_sync_index_1m_rows_rss_under_64mib -- --ignored --nocapture
+
+# 对比平台系统分配器
+cargo test --release -p rship-cli --no-default-features --features all-backends \
+  --test acceptance_benchmarks \
+  acceptance_sqlite_sync_index_1m_rows_rss_under_64mib -- --ignored --nocapture
+```

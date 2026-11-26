@@ -1,0 +1,192 @@
+[package]
+name = "rship-backends"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Feature-gated StorageBackend implementations for Local, Google Drive, S3, OneDrive, WebDAV, SFTP, Dropbox, GCS, and Azure Blob"
+
+[features]
+default = ["all"]
+all = [
+    "local",
+    "gdrive",
+    "s3",
+    "webdav",
+    "onedrive",
+    "sftp",
+    "dropbox",
+    "gcs",
+    "azureblob",
+]
+local = [
+    "dep:hex",
+    "dep:libc",
+    "dep:md-5",
+    "dep:sha2",
+    "dep:windows-sys",
+]
+gdrive = [
+    "dep:base64",
+    "dep:http",
+    "dep:reqwest",
+    "dep:rsa",
+    "dep:rship-transport",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:unicode-normalization",
+    "dep:url",
+]
+s3 = [
+    "dep:base64",
+    "dep:hex",
+    "dep:http",
+    "dep:md-5",
+    "dep:quick-xml",
+    "dep:reqwest",
+    "dep:rship-transport",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:tempfile",
+    "dep:url",
+]
+webdav = [
+    "dep:base64",
+    "dep:http",
+    "dep:quick-xml",
+    "dep:reqwest",
+    "dep:rship-transport",
+    "dep:serde_json",
+    "dep:url",
+]
+onedrive = [
+    "dep:base64",
+    "dep:http",
+    "dep:reqwest",
+    "dep:rship-transport",
+    "dep:serde_json",
+]
+sftp = [
+    # Pulls `prebuilt-nasm` on `aws-lc-rs` from workspace Cargo.toml for `russh` on Windows.
+    "dep:aws-lc-rs",
+    "dep:russh",
+    "dep:russh-sftp",
+]
+dropbox = [
+    "dep:hex",
+    "dep:http",
+    "dep:reqwest",
+    "dep:rship-transport",
+    "dep:serde_json",
+    "dep:sha2",
+]
+gcs = [
+    "dep:base64",
+    "dep:hex",
+    "dep:http",
+    "dep:reqwest",
+    "dep:rsa",
+    "dep:rship-transport",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:url",
+]
+azureblob = [
+    "dep:base64",
+    "dep:hex",
+    "dep:http",
+    "dep:quick-xml",
+    "dep:reqwest",
+    "dep:rship-transport",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:url",
+]
+
+[dependencies]
+async-trait.workspace = true
+aws-lc-rs = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+bytes.workspace = true
+futures.workspace = true
+hex = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+md-5 = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+rsa = { workspace = true, optional = true }
+rship-core.workspace = true
+rship-transport = { workspace = true, optional = true }
+russh = { workspace = true, optional = true }
+russh-sftp = { workspace = true, optional = true }
+serde.workspace = true
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+tokio.workspace = true
+tracing.workspace = true
+unicode-normalization = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, optional = true }
+
+[dev-dependencies]
+anyhow.workspace = true
+axum.workspace = true
+hex.workspace = true
+md-5.workspace = true
+rand.workspace = true
+rship-core = { version = "0.1.0", path = "../rship-core", features = ["test-utils"] }
+rship-state.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "test-util"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "gdrive_conformance"
+required-features = ["gdrive", "local"]
+
+[[test]]
+name = "s3_conformance"
+required-features = ["s3", "local"]
+
+[[test]]
+name = "s3_live_smoke"
+required-features = ["s3"]
+
+[[test]]
+name = "onedrive_conformance"
+required-features = ["onedrive"]
+
+[[test]]
+name = "webdav_conformance"
+required-features = ["webdav"]
+
+[[test]]
+name = "sftp_conformance"
+required-features = ["sftp"]
+
+[[test]]
+name = "dropbox_conformance"
+required-features = ["dropbox"]
+
+[[test]]
+name = "gcs_conformance"
+required-features = ["gcs"]
+
+[[test]]
+name = "azureblob_conformance"
+required-features = ["azureblob"]
+
+[[test]]
+name = "scale_bench"
+required-features = ["s3", "local"]

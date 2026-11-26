@@ -1,0 +1,118 @@
+---
+title: Google Drive
+description: Drive v3 原生驱动，支持桌面端 PKCE 回环授权、5 分钟 Cloud Console OAuth 配置、服务账号、changes.list 增量缓存与 750 GiB/日配额故障转移。
+section: providers
+---
+
+`gdrive` 后端（`backend-gdrive`）直接调用 Google Drive REST API v3，无外部 SDK 依赖。支持**桌面端 PKCE 回环 OAuth 2.0**（不使用已弃用的 OOB 流程）或 **RS256 服务账号 JWT** 认证，内置基于 SQLite 的 `changes.list` 增量目录缓存、CUBIC 自适应限流以及按字节精确对齐的 `308 resumable` 断点续传。
+
+## 授权配置示例
+
+<CodeTabs>
+<CodeTab label="桌面端 PKCE 回环授权">
+
+```bash
+# 打开浏览器并在 http://127.0.0.1:<ephemeral-port>/callback 完成回调
+rship auth gdrive gdrive \
+  --client-id "<YOUR_CLIENT_ID>.apps.googleusercontent.com" \
+  --client-secret "<YOUR_CLIENT_SECRET>" \
+  --scope drive
+
+# 将令牌迁移至 macOS / Windows / Linux 系统密钥环
+rship auth keyring-migrate
+rship about gdrive:
+```
+
+</CodeTab>
+<CodeTab label="共享云端硬盘 (服务账号)">
+
+```bash
+# 服务账号个人云端硬盘配额为 0 MiB，需指向共享云端硬盘
+rship auth gdrive team-drive \
+  --service-account-file ./service-account.json \
+  --shared-drive-id "<SHARED_DRIVE_ID>"
+
+rship ls team-drive:
+```
+
+</CodeTab>
+<CodeTab label="Workspace 域内委派 (DwD)">
+
+```bash
+# Google Workspace 服务机器人域内委派（Domain-Wide Delegation）
+rship auth gdrive corp \
+  --service-account-file ./service-account.json \
+  --impersonate "backup-bot@yourdomain.com" \
+  --root-folder-id "root"
+```
+
+</CodeTab>
+</CodeTabs>
+
+<span id="oauth-20-setup" className="block scroll-mt-24" aria-hidden="true" />
+
+## OAuth 2.0 配置
+
+也可随时在终端执行 `rship auth gdrive --guide` 查看完整配置步骤。
+
+### 选择授权方案
+
+| 方案 | 适用场景 | 需要 Google 审核 / CASA 审计？ | 配置耗时 |
+| :--- | :--- | :--- | :--- |
+| **方案 A：自建 Client ID（推荐）** | 个人使用、团队内部、自建服务器、进阶用户 | **不需要**（*Testing* 模式或 Workspace *Internal*，最多 100 名测试用户） | **约 5 分钟** |
+| **方案 B：公开已验证 OAuth 应用** | 向第三方用户分发共享默认 Client ID | `drive` / `drive.readonly` **需要**（受限权限 + 年度 CASA Tier 2 审计）；**`drive.file` 属非敏感权限**（免 CASA 审计） | **2–6 周** |
+| **方案 C：服务账号 (RS256 JWT)** | 自动化 CI / 服务器访问**共享云端硬盘**或 Workspace **域内委派** | **不需要** | **约 5 分钟** |
+
+### 方案 A：5 分钟创建桌面端 Client ID
+
+1. **创建项目并启用 API**：打开 [Google Cloud Console](https://console.cloud.google.com/)，新建或选择项目（如 `rship-personal-drive`），进入 **APIs & Services → Library**，搜索 **Google Drive API** 并点击 **Enable**。
+2. **配置认证平台**：进入 **Google Auth Platform → Overview → Get Started**（或 **OAuth consent screen**），将应用名称设为 `rship`，填写支持邮箱，选择 **Internal**（Google Workspace，永不过期）或 **External**（个人 `@gmail.com` 账号）。
+3. **添加权限范围与测试用户**：在 **Data Access → Add or Remove Scopes** 中按最小权限原则选择所需范围：
+   - `https://www.googleapis.com/auth/drive`（`--scope drive`）——完整访问权限，适合同步既有目录。
+   - `https://www.googleapis.com/auth/drive.file`（`--scope drive.file`）——仅访问本应用创建的文件（**非敏感权限**，免 CASA 审计）。
+   - `https://www.googleapis.com/auth/drive.readonly`（`--scope drive.readonly`）——只读备份或镜像。
+   随后在 **Audience → Test users** 中加入需要授权的全部 Google 邮箱。
+4. **创建桌面端凭据**：在 **Google Auth Platform → Clients → Create Client** 中选择 **Desktop app**（Google 仅允许桌面端应用使用 `http://127.0.0.1:<port>/callback` 回环回调），复制生成的 **Client ID** 与 **Client Secret**。
+5. **授权并验证**：执行 `rship auth gdrive gdrive --client-id ... --client-secret ...`，再运行 `rship config test gdrive` 与 `rship about gdrive:` 检查连通性。无头服务器部署请参阅[无头 VPS、Docker 与密钥环](/guide/deployment)。
+
+<Callout type="tip" title="避免 7 天刷新令牌过期">
+处于 **Testing** 状态的 *External* 应用，Google 会在 **7 天**后使刷新令牌失效。对于长期无人值守任务，建议选择 **Internal**（Workspace）、点击 **Publish app** 切换至 *In production*（个人账号首次登录时点一次 *Advanced → Continue* 即可），或在共享云端硬盘场景下改用**方案 C（服务账号）**。
+</Callout>
+
+### 方案 B：公开已验证 OAuth 应用清单
+
+若需面向第三方用户维护共享公开 Client ID：
+
+1. **已验证域名与公开主页**：在 [Google Search Console](https://search.google.com/search-console) 验证域名，并托管本独立的 `rship` 站点（`website/`）。
+2. **公开隐私政策链接**：直接指向同一已验证域名下的[隐私政策](/privacy)。
+3. **应用图标（`120×120` PNG）**：发布至 `/logo-120.png`（源文件 `assets/logo-120.png`）。
+4. **权限选择**：公开共享客户端优先使用 `drive.file`（非敏感权限、审核快、零 CASA 费用），同时允许进阶用户按方案 A 填入自有 Client ID 以获得完整 `drive` 权限。
+5. **未公开列表的 YouTube 演示视频**：录制 60–90 秒屏幕操作，展示执行 `rship auth gdrive ...`、授权页清晰显示 `client_id` 与权限范围、点击允许，以及运行 `rship about`、`rship copy` 和 `rship ls`。
+
+### 方案 C：服务账号注意事项
+
+<Callout type="info" title="配额说明">
+在现代 GCP 账号中，Google Drive 服务账号的**个人“我的云端硬盘”配额为 0 字节**。请始终指向**共享云端硬盘（`--shared-drive-id`）**，或通过 `--impersonate` 模拟 Google Workspace 用户身份。
+</Callout>
+
+## 参数参考 (`rship auth gdrive`)
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | 远端逻辑名称（如 `gdrive`、`work-drive`） |
+| `--client-id` | 无 | Google Cloud OAuth 2.0 **Desktop app** `client_id` |
+| `--client-secret` | 无 | OAuth 2.0 `client_secret`（Google 桌面端令牌交换必填） |
+| `--scope` | `drive` | 别名（`drive`、`drive.file`、`drive.readonly`）或完整 scope URL |
+| `--root-folder-id` | `root` | 将操作范围限定到“我的云端硬盘”中的指定目录 ID |
+| `--shared-drive-id` | 无 | 共享云端硬盘（`team_drive`）ID；自动启用 `corpora=drive` 与 `supportsAllDrives=true` |
+| `--service-account-file` | 无 | 适用于 CI / 服务器的非交互式 RS256 JWT 密钥文件 |
+| `--impersonate` | 无 | 域内委派模拟的主体邮箱（`sub`） |
+| `--guide` | `false` | 打印完整 Cloud Console 配置指南并退出 |
+
+## 协议细节、配额故障转移与去重
+
+- **分片对齐与 `308 resumable` 续传**：`<= 5 MiB` 的文件走单次 `uploadType=multipart`；更大文件以 `256 KiB` 对齐的分片（默认分片大小 `256 MiB`）流式上传，并通过 SQLite WAL 持久化 `Content-Range` 续传状态。
+- **`changes.list` 增量目录缓存**：目录树与 `changes.list` 分页游标同步存储在 SQLite（`gdrive_nodes`）中，避免重复 `sync` 时耗时递归遍历整个云盘。需要绕过缓存实时列目录时，传入全局参数 `--no-changes-feed`。
+- **写入 QPS 节流与 750 GiB/日配额上限**：默认以 `8.0 creates/s` 令牌桶平滑写入速率，遇到 `403`/`429` 时触发 CUBIC 退避。传入全局 `--drive-stop-on-upload-limit`（`RSHIP_DRIVE_STOP_ON_UPLOAD_LIMIT=1`）可将 Google 每日 `403 userRateLimitExceeded`（750 GiB/日）限额立即转为 `ErrorKind::QuotaExceeded`，配合 Rust SDK 的 `FailoverPool` 自动切换账号。
+- **重名文件去重 (`rship dedupe`)**：Drive 允许同目录下存在同名文件，可使用 `rship dedupe gdrive:photos --mode newest`（支持 `newest`、`oldest`、`largest`、`rename`、`skip`）按节点 ID 安全清理重复项。
+- **零重传去重与服务端拷贝**：同远端拷贝走 `files.copy`，`rship cat` 支持 HTTP `Range` 分段下载。

@@ -1,0 +1,38 @@
+---
+title: 隐私政策
+description: 本地优先架构、零遥测数据收集，以及 Google API Services User Data Policy（Limited Use）合规声明。
+section: performance
+---
+
+*最后更新：2026-11-25*
+
+## 1. 本地优先架构（无开发者服务器）
+
+`rship` 是一款开源、本地优先的命令行与 Rust SDK 文件传输同步引擎。`rship` 项目及其维护者**不运营任何后端服务器、分析采集器、遥测端点或云端代理**。
+
+所有网络流量均在用户设备与用户显式配置的第三方存储服务端点之间**直连通信**（例如 Google Drive `www.googleapis.com`、Google Cloud Storage `storage.googleapis.com`、Microsoft Graph `graph.microsoft.com`、Dropbox `api.dropboxapi.com`、Azure Blob Storage `*.blob.core.windows.net`、S3 兼容端点、WebDAV 服务器或 SSH/SFTP 服务器）。
+
+## 2. 通过 Google APIs 访问的数据
+
+当用户通过 OAuth 2.0 授权 `rship` 访问 Google Drive 或 Google Cloud Storage 时：
+
+- `rship` 仅访问执行用户显式发起的 CLI 或 SDK 操作所必需的文件、目录、元数据、变更订阅（change feeds）及存储配额信息（`ls`、`tree`、`size`、`about`、`copy`、`copyto`、`sync`、`move`、`moveto`、`bisync`、`check`、`hashsum`、`dedupe`、`delete`、`purge`、`cat`、`rcat`）。
+- OAuth 访问令牌（access token）与刷新令牌（refresh token）**仅保存在用户本机**（以严格的 `0600` 文件权限存储，或在执行 `rship auth keyring-migrate` 后存入操作系统密钥环）。
+- 令牌、配置密钥与文件内容**绝不会**发送给 `rship` 开发者或任何未经授权的第三方。
+
+## 3. Google API Services User Data Policy（Limited Use 声明）
+
+`rship` 对从 Google APIs 获取的信息的使用，以及向任何其他应用的传输，均严格遵守 [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy)，包括其中的 **Limited Use** 要求：
+
+- 用户数据仅用于执行用户主动发起的本地传输、备份、校验与同步操作。
+- 用户数据绝不用于广告投放、用户画像、数据交易，或训练通用 AI/ML 模型。
+- 除用户本人直接在本地设备上操作外，任何人员均无法读取或访问用户数据。
+
+## 4. 数据保留与删除
+
+- 由于 `rship` 将全部配置（`config.toml`）、SQLite 续传日志（`state.db`）与 OAuth 令牌全部存储在用户本机，用户对数据保留与删除拥有 100% 控制权。
+- 用户可随时在 [Google 账号第三方应用连接](https://myaccount.google.com/permissions) 页面撤销 `rship` 授权，并通过 `rship config rm <remote>` 删除本地凭据，或直接删除 `rship config path` 打印的本地配置与状态目录。
+
+## 5. 联系方式
+
+如有隐私疑问或安全问题反馈，请在 [GitHub Issues](https://github.com/hua0512/rship/issues) 提交 issue，或直接在 [github.com/hua0512/rship](https://github.com/hua0512/rship) 审阅全部源代码。

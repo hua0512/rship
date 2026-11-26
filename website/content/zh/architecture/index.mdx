@@ -1,0 +1,55 @@
+---
+title: 系统架构与核心不变量
+description: 拆解 7-crate Rust 工作区拓扑，以及将常驻内存锁死在 <= 64 MiB RSS 并保证零重复崩溃恢复的 6 条架构不变量。
+section: sdk
+---
+
+`rship` 围绕**严格的架构不变量**构建，整个项目常年保持精简的 **7-crate Rust 工作区**结构。
+
+## 7-Crate 工作区拓扑
+
+点击下方任意 crate，查看其职责边界、核心不变量、关键类型与工作区路径：
+
+<ArchitectureGraph />
+
+| Crate | 职责定位 |
+| :--- | :--- |
+| **`rship`** | 顶层 Rust SDK 门面（惰性初始化 `HttpTransport` 与 `StateActor` 的 `RshipClient`、`ClientBuilder`、`TransferBuilder`、`BisyncBuilder`、`TransferTarget`、`ResolvedTarget`、`#[non_exhaustive]` `*RemoteConfig` 链式构造器、带缓存的后端注册表、共享 `config` / `secrets` / `factory`、优雅 `shutdown()`、`default = ["local"]`）。 |
+| **`rship-core`** | 零 I/O 的传输 / 同步 / 双向同步引擎（`engine/run/{mod,streaming,delete}.rs`）、`JoinSet` 并发分片、Falcon 自适应调度器、`BufferPool`、`ChunkStrategy`、`FilterSet`、`FailoverPool`、带 panic 隔离与严格序号的 `TransferEvent` / `EventSink`、`MemoryJournalStore`、`MemorySyncIndex`、`rclone_ini`、`ChaosBackend` 确定性仿真测试（DST）与通用一致性测试套件。 |
+| **`rship-state`** | 内置 SQLite `StateActor`（`actor/{mod,worker,baselines,delta}.rs`，WAL + `NORMAL` 组提交 + `ActiveOpIndex` + 优雅 `shutdown()`）、临时 `SqliteSyncIndex`、`DeltaInventoryStore`、跨平台纯安全建议性文件锁 `ProcessLock`。 |
+| **`rship-transport`** | 分离的 HTTP/2 控制面与 HTTP/1.1 数据面、`--proxy`、`--ca-cert`、基于字节进度的停滞看门狗、CUBIC 自适应限流器、重试配额、写 QPS 令牌桶与共享 `oauth` PKCE / 刷新引擎。 |
+| **`rship-crypto`** | `#![forbid(unsafe_code)]` 硬件加速（`aws-lc-rs` + `HChaCha20`）的 STREAM OAE2 可随机定位 64 KiB `XChaCha20-Poly1305` 加密覆盖层、Argon2id / HKDF / `zeroize`、SIV base32 文件名加密。 |
+| **`rship-backends`** | 按 feature 裁剪的统一驱动 crate（`local`、`gdrive`、`s3` [12 套预设]、`dropbox`、`gcs`、`azureblob`、`onedrive`、`webdav`、`sftp`）以及共享的 `common`（`rx_to_entry_stream`、`http`、`crc`、`StrictBodyStream`、`ExactDownloadStream`、`google_sa`、`xml`）。 |
+| **`rship-cli`** | 模块化 `rship` CLI（`ui.rs` 语义 ANSI 样式 + 复用 `RshipClient` 的 `ops/` + `providers/{mod,bundle,oauth,filters}.rs` `ProviderAdapter` 认证 / 凭据包 / GC 注册表 + 系统密钥环 + 实时 TUI）。 |
+
+## 核心架构不变量
+
+### 1. 许可制零拷贝缓冲（`<= 64 MiB` RSS）
+- `BufferPool` 由 **4 KiB 粒度的字节信号量**把关（默认上限 `min(25% cgroup_limit, 16 MiB)`，可通过 `--max-buffer-mem` 显式覆盖）。
+- `256 KiB` 流式缓冲区封装在 `PooledSlice` 中，通过 **`Bytes::from_owner(PooledSlice)`** 交给网络与磁盘栈，直到套接字或文件句柄真正刷完才会归还信号量许可。
+- **防死锁不变量**：任意任务同一时间最多持有 1 块 `PooledSlice`，持有期间严禁再次调用 `acquire()`。
+- 任务准入完全采用拉动式驱动（`mpsc::channel(256)` → 固定大小工作池）。SQLite 强制开启 `PRAGMA mmap_size = 0; temp_store = FILE;`，并限制页缓存上限（`journal.db` 为 `-4096`，临时 `SqliteSyncIndex` 为 `-8192`）。
+
+### 2. I/O 流切片与协议分片解耦
+- *I/O 流切片*（池化 `256 KiB`）：从 `SeekableSource::read_at` 或 `RemoteRangeReadable` 持续流式灌入单次 HTTP 请求体，不增加额外 API 调用。
+- *协议分片*（GDrive 按 `256 KiB` 对齐的 `256 MiB` 分片；S3 遵守 10,000 分片上限的 `16–512 MiB` 分级分片；Dropbox `4 MiB`；OneDrive `320 KiB`；以及单次直传快路径 GDrive `<= 5 MiB` / S3 `<= 16 MiB`）：在**零额外内存开销**的前提下压低 QPS 与 PUT 请求费用。
+
+### 3. 预写操作日志与模糊提交对账
+- 每次传输在改动远端状态**之前**，都会先把 `Intent`（`op_id`、源文件新鲜度指纹、目标前置条件、上传分片几何参数、远端幂等键）写入 SQLite WAL。
+- 最终提交前，先落盘 `completing` 意向并重新核验源文件新鲜度（拦截并发修改的 TOCTOU 及等长中间改写）。若遇模糊失败（`404` / `NoSuchUpload` / 断电），重传前先按目标标识（`fileId` / `x-amz-meta-rship-op-id`）对账，杜绝重复文件与静默损坏。
+
+### 4. 命名空间标识与三树双向同步（Unison + Dropbox Canopy）
+- 每个观测到的 `Entry` 都保留 `(node_id, parent_id, raw_path, nfc_path)`。
+- 临时 `SqliteSyncIndex` 采用代理行 ID 与非唯一 `nfc_path` / `fold_path` 索引，显式暴露 Unicode NFC 与大小写冲突，绝不静默覆盖。
+- 双端 `sync_baseline` 消除 S3 `LastModified` / `ETag` 误判，并支撑三树 `bisync` 默认采用零数据丢失的 `keep-both` 冲突副本策略。
+- **Observation Completeness Gate**：目录列表只要有任意一页失败，立即熔断全部目标删除操作（叠加默认 `--delete-after` 与 `--max-delete` 阈值熔断器）。
+
+### 5. OSDI-2014 崩溃一致本地发布与快速拷贝
+- 本地拷贝直接走 OS 原生快路径：大文件使用 `CopyFileExW` / `copy_file_range` / `fclonefileat`；小文件通过单次系统调用 `read_exact` 配合 Windows 句柄内 `SetFileInformationByHandle(FileRenameInfo)` 原子暂存替换。
+- `UploadTopology::ParallelParts` 支持多线程云端分片下载，以及 4 分片并行 OAE2 加密写入（`32 MiB` 分片，附带 CRC32C 断电续传清单）。
+- 双射 `EncodingLayer` 在 Windows `\\?\` / `\\?\UNC\` 逐字路径转换前执行；Unix 遍历器通过 `symlink_metadata()` 跳过 FIFO、套接字与设备文件。
+
+### 6. 双平面传输与协议感知恢复
+- **控制面**：多路复用 HTTP/2，内置 `rustls-tls-native-roots`，支持 `--ca-cert` 与 `--proxy`。
+- **数据面**：默认采用 `.http1_only()`（避免大块上传在 HTTP/2 上发生流合并以及无界 `h2` 接收缓冲膨胀），并由字节进度停滞看门狗兜底。
+- 错误恢复收口在协议感知状态机内，结合前置 `--tpslimit`、CUBIC 自适应限流与重试配额桶协同控制。

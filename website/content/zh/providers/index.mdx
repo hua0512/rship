@@ -1,0 +1,34 @@
+---
+title: 云与本地存储后端
+description: 内置 10 大存储后端驱动总览、交互式配置生成器、各驱动专属文档及 Cargo Feature 按需裁剪编译指南。
+section: providers
+---
+
+`rship` 中的每一个存储驱动均采用**全链路流式传输、Feature 按需裁剪、原生支持崩溃断点续传，并通过统一架构一致性测试套件校验**。
+
+## 存储驱动目录
+
+支持实时检索或按能力筛选内置后端，直接复制对应的 `rship auth` 授权命令，或点开各后端的完整配置参考页：
+
+<ProviderMatrix />
+
+## 交互式配置生成器
+
+选择目标存储服务并按需叠加 STREAM OAE2 客户端加密、操作系统密钥环或 `rclone.conf` 导入，直接在浏览器本地生成可复制运行的完整脚本：
+
+<ProviderComposer />
+
+## 按 Feature 裁剪编译
+
+在嵌入 `rship` Rust SDK 或构建极致精简的 CLI 时，可以只启用实际使用的存储后端（全部 12 个 S3 预设参数详见 [S3 及 S3 兼容存储（12 预设）](/providers/s3)）：
+
+```bash
+# 仅保留 Local 与 S3 驱动的极简 CLI（零 Google / Azure / SFTP / WebDAV 代码体积）
+cargo build --release -p rship-cli --no-default-features --features backend-local,backend-s3
+
+# 极简 Rust SDK（默认仅启用 local，零 HTTP / SQLite / Keyring 依赖）
+# Cargo.toml:
+# rship = { git = "https://github.com/hua0512/rship", features = ["s3", "sqlite"] }
+```
+
+希望贡献或集成新的存储后端？欢迎参考 [4 步接入新存储后端](/architecture/adding-a-provider)。

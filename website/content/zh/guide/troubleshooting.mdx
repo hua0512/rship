@@ -1,0 +1,143 @@
+---
+title: 配置与故障排查
+description: config.toml 字段说明、状态目录结构、环境变量、ProcessLock 行为、代理/TLS 配置及常见故障恢复手册。
+section: core
+---
+
+随时可通过 `rship config path`、`rship config show`（默认将敏感字段脱敏为 `***REDACTED***`，传入 `--show-secrets` 可显示明文）与 `rship status` 检查当前生效的配置路径与运行状态。
+
+## `config.toml` 结构
+
+`rship` 以原子写方式生成声明式 TOML 配置，在 Unix 系统上自动设置 `0600` 文件权限（父目录为 `0700`）：
+
+```toml
+[defaults]
+transfers = 4
+part_concurrency = 4
+adaptive = true
+exclude = [".git/", ".DS_Store"]
+
+[profiles.nightly]
+bwlimit = "08:00,10M 23:00,off"
+max_delete = "25%"
+exclude = ["target/", "*.tmp"]
+
+[remotes.r2]
+type = "s3"
+provider = "r2"
+bucket = "my-backups"
+region = "auto"
+endpoint = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+access_key_id = "<ACCESS_KEY>"
+secret_access_key = "keyring://rship/s3.r2.secret_access_key"
+
+[remotes.gdrive]
+type = "gdrive"
+client_id = "<CLIENT_ID>.apps.googleusercontent.com"
+client_secret = "keyring://rship/gdrive.gdrive.client_secret"
+use_changes_feed = true
+stop_on_upload_limit = true
+
+[remotes.vps]
+type = "sftp"
+host = "10.0.0.5"
+port = 22
+user = "deploy"
+key_file = "/home/alice/.ssh/id_ed25519"
+host_key_policy = "accept-new"
+
+[remotes.vault]
+type = "crypt"
+remote = "r2:encrypted-vault"
+password = "keyring://rship/crypt.vault.password"
+filename_encryption = "standard"
+```
+
+`[remotes.<alias>]` 支持的 `type` 值包括 `"local"`、`"gdrive"`、`"s3"`、`"onedrive"`、`"webdav"`、`"sftp"`、`"dropbox"`、`"gcs"`、`"azureblob"` 与 `"crypt"`。
+
+## 状态目录结构
+
+默认情况下，`rship` 按各操作系统规范解析应用目录（`ProjectDirs::from("dev", "rship", "rship")`，可通过 `--config` / `RSHIP_CONFIG` 与 `--state-dir` / `RSHIP_STATE_DIR` 覆盖）：
+
+| `state_dir` 内条目 | 用途 |
+| :--- | :--- |
+| `state.db`（`-wal`、`-shm`） | WAL 模式 SQLite 数据库，存储作业历史、`Intent` 记录、断点续传 URI/ETag、`bisync` 基线（`sync_baseline`）以及 Google Drive `changes.list` 目录缓存。 |
+| `locks/<sha256_prefix>.lock` | 按目标端标识隔离的非阻塞互斥建议锁（`ProcessLock`），防止并发 `rship` 进程损坏共享目标或分片状态。 |
+| `runs/` | 单次运行临时生成的 `sync-<job_id>.db`（`SqliteSyncIndex`）索引库及 `--strict-source` 私有文件快照（运行结束后自动清理）。 |
+| `tokens/` | OAuth2 访问/刷新令牌 JSON（`<remote>.json`、`<remote>.dropbox.json`、`<remote>.gcs.json`、`<remote>.onedrive.json`）及解出的 Service Account JSON 密钥（权限 `0600`）。 |
+
+## 环境变量
+
+常用运行时参数均可通过环境变量注入，适配 systemd 单元、CI 构建机与 Docker 容器：
+
+| 环境变量 | 等价参数 | 说明 |
+| :--- | :--- | :--- |
+| `RSHIP_PROFILE` | `-p, --profile <NAME>` | 默认启用的 `[profiles.<NAME>]` 预设名 |
+| `RSHIP_CONFIG` | `--config <PATH>` | 覆盖 `config.toml` 路径 |
+| `RSHIP_STATE_DIR` | `--state-dir <PATH>` | 覆盖状态目录（`state.db`、`locks/`、`runs/`、`tokens/`） |
+| `RSHIP_CA_CERT` | `--ca-cert <PATH>` | 指定自定义 PEM 根证书包（用于企业内网/代理 TLS 根证书） |
+| `RSHIP_PROXY` | `--proxy <URL>` | 为控制面与数据面设置代理（`http://`、`https://`、`socks5://`、`socks5h://`） |
+| `RSHIP_TPSLIMIT` | `--tpslimit <N>` | 全局主动限速：每秒 API 请求数上限 |
+| `RSHIP_DRIVE_STOP_ON_UPLOAD_LIMIT` | `--drive-stop-on-upload-limit` | 触及 Google Drive 750 GiB/日上限时快速返回 `QuotaExceeded` |
+| `RSHIP_LOW_LEVEL_RETRIES` | `--low-level-retries <N>` | 云端后端单次 HTTP 请求的重试上限 |
+| `NO_COLOR` / `CLICOLOR_FORCE` | — | 控制 ANSI 色彩输出（`TERM=dumb` 同样关闭色彩） |
+
+## 常见问题与恢复
+
+### 1. ProcessLock 互斥锁冲突
+
+**现象**：`another rship process already holds exclusive lock ...`
+
+- 写入目标端前，`rship` 会按目标端标识获取互斥建议锁（Windows 上为 `LockFileEx`，Unix 上为 `File::try_lock`）。
+- 用 `rship status` 查看正在运行或暂停的作业。若是 cron 周期重叠引起，请用 `flock -n` 包装调度命令，或等待前一次运行完成。
+- **仅当**外部编排器能严格保证对同一目标串行调度时，才允许传入 `--no-lock`。
+
+### 2. 企业代理与自签名 TLS 证书
+
+**现象**：在代理或启用 SSL 审计的防火墙后出现 TLS 证书报错或连接超时。
+
+```bash
+rship --proxy http://proxy.corp.internal:8080 \
+  --ca-cert /etc/ssl/certs/corp-root-ca.pem \
+  config test r2
+```
+
+如需在跳板机上通过 SOCKS5 远端解析 DNS，请使用 `socks5h://127.0.0.1:1080`。
+
+### 3. Google Drive 7 天令牌过期或 750 GiB/日配额上限
+
+- **7 天 `invalid_grant` 过期**：处于 **Testing（测试）** 状态的 Google Cloud 项目会在 7 天后使桌面端刷新令牌失效。请将 OAuth 应用发布为 *In production*（个人外部账号）或 *Internal*（Workspace 内部），或改用 Service Account；详见 [Google Drive OAuth 2.0 配置](/providers/gdrive#oauth-20-setup)。
+- **750 GiB/日上传上限**：传入 `--drive-stop-on-upload-limit`，遇到 `403 userRateLimitExceeded` 时立即返回 `QuotaExceeded`，避免陷入指数退避重试空等。
+
+### 4. 清理滞留的分片会话与本地暂存
+
+中断的上传会保留多段/断点续传会话，以便 `rship resume <job_id>` 接着传。若已决定放弃旧的暂停作业，希望中止云端悬挂的分片上传或清理本地 `.rship.part.*` 暂存文件：
+
+```bash
+# 先检查活动或暂停中的作业
+rship status
+
+# 中止 state.db 中记录的已放弃会话（--all 会清空全部活动记录）
+rship gc
+rship gc --all
+```
+
+### 5. 在无系统密钥环的容器中运行
+
+Docker 与精简 Linux 容器通常没有运行 D-Bus Secret Service。不要在无头容器内执行 `rship auth keyring-migrate`，应先在本地工作站完成授权，再用 `rship auth export <remote>` / `rship auth import` 迁入凭据包。完整命令示例见[无头 VPS、Docker 与密钥环](/guide/deployment)。
+
+### 6. Windows 长路径（`> 260` 字符）与保留文件名
+
+在 Windows 上，`rship` 会先经双向可逆的 `EncodingLayer` 规范化，再自动将本地路径转换为 `\\?\` / `\\?\UNC\` 扩展逐字路径，深层嵌套目录及末尾带点或空格的文件名无需手动修改注册表即可正常工作。
+
+## 提交 Issue
+
+在提交 [GitHub Issue](https://github.com/hua0512/rship/issues) 时，请附上脱敏后的诊断信息（`rship config show` 会自动隐藏密钥）：
+
+```bash
+rship --version
+rship config show
+rship status --json
+# 复现问题并在 stderr 输出详细的 HTTP 与引擎追踪日志
+rship -vv copy <SRC> <DST> --dry-run
+```

@@ -1,0 +1,31 @@
+<svg width="264" height="96" viewBox="0 0 264 96" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="rship">
+  <defs>
+    <linearGradient id="rship-hull-d" x1="16" y1="66" x2="106" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FF7A3D"/>
+      <stop offset="100%" stop-color="#DC3818"/>
+    </linearGradient>
+    <linearGradient id="rship-hull-sheen-d" x1="16" y1="66" x2="106" y2="76" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FDBA74" stop-opacity="0.42"/>
+      <stop offset="100%" stop-color="#FF7A3D" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="rship-cyan-d" x1="26" y1="22" x2="94" y2="61" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+    <clipPath id="rship-hull-clip-d">
+      <path d="M18.5 67.5H103C106.1 67.5 107.9 70.9 106.2 73.5L92.5 93.8C91.4 95.4 89.6 96.4 87.7 96.4H31.8C29.4 96.4 27.3 94.9 26.5 92.6L15.1 72.5C13.9 70.1 15.7 67.5 18.5 67.5Z"/>
+    </clipPath>
+  </defs>
+  <g transform="translate(2, -2) scale(0.84)">
+    <path d="M44 23H77C79.5 23 81 25.4 79.8 27.6L73.6 38.4C72.9 39.6 71.6 40.3 70.2 40.3H37.2C34.7 40.3 33.2 37.9 34.4 35.7L40.6 24.9C41.3 23.7 42.6 23 44 23Z" fill="url(#rship-cyan-d)"/>
+    <path d="M31.5 46.5H53.5C55.9 46.5 57.3 48.9 56.2 51L51.8 59.1C51.1 60.3 49.9 61 48.5 61H26.5C24.1 61 22.7 58.6 23.8 56.5L28.2 48.4C28.9 47.2 30.1 46.5 31.5 46.5Z" fill="#0EA5E9"/>
+    <path d="M62.5 46.5H90.5C92.9 46.5 94.3 48.9 93.2 51L88.8 59.1C88.1 60.3 86.9 61 85.5 61H57.5C55.1 61 53.7 58.6 54.8 56.5L59.2 48.4C59.9 47.2 61.1 46.5 62.5 46.5Z" fill="url(#rship-cyan-d)"/>
+    <g clip-path="url(#rship-hull-clip-d)">
+      <rect x="12" y="66" width="98" height="32" fill="url(#rship-hull-d)"/>
+      <rect x="12" y="66" width="98" height="9.5" fill="url(#rship-hull-sheen-d)"/>
+    </g>
+  </g>
+  <text x="104" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, Helvetica, Arial, sans-serif" font-size="56" font-weight="700" letter-spacing="-1.4">
+    <tspan fill="#FF7A3D">r</tspan><tspan fill="#F8FAFC">ship</tspan>
+  </text>
+</svg>

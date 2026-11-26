@@ -1,0 +1,112 @@
+---
+title: S3 & S3-Compatible (12 Presets)
+description: Configure AWS S3, Cloudflare R2, MinIO, Alibaba OSS, Backblaze B2, and 7 other presets with SigV4, parallel multipart resume, and server-side copy.
+section: providers
+---
+
+The `s3` backend (`backend-s3`) targets Amazon S3 and 11 S3-compatible object stores through a built-in provider capability matrix. Presets encode exact per-vendor quirks such as Cloudflare R2's equal-non-final-parts rule, conditional writes, and hardware-accelerated checksum support.
+
+## Quick Setup
+
+<CodeTabs>
+<CodeTab label="Cloudflare R2">
+
+```bash
+rship auth s3 r2 \
+  --provider r2 \
+  --bucket backups \
+  --region auto \
+  --endpoint https://<ACCOUNT_ID>.r2.cloudflarestorage.com \
+  --access-key-id <ACCESS_KEY_ID> \
+  --secret-access-key <SECRET_ACCESS_KEY>
+
+rship about r2:backups
+```
+
+</CodeTab>
+<CodeTab label="AWS S3 (IAM Env / Keys)">
+
+```bash
+# Read AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from environment
+rship auth s3 aws-prod \
+  --provider aws \
+  --bucket corp-archive \
+  --region us-east-1 \
+  --env-auth
+
+# Or supply explicit keys + optional STS session token
+rship auth s3 aws-prod --provider aws --bucket corp-archive --region us-east-1
+```
+
+</CodeTab>
+<CodeTab label="MinIO / Self-Hosted">
+
+```bash
+rship auth s3 minio \
+  --provider minio \
+  --bucket media \
+  --endpoint http://127.0.0.1:9000 \
+  --access-key-id minioadmin \
+  --secret-access-key minioadmin
+```
+
+</CodeTab>
+<CodeTab label="Backblaze B2 / Alibaba OSS">
+
+```bash
+# Backblaze B2 S3-Compatible API
+rship auth s3 b2 --provider b2 --bucket cold-backups --region us-west-004
+
+# Alibaba Cloud OSS (optional --prefix scoping)
+rship auth s3 oss --provider oss --bucket prod-data --region oss-cn-hangzhou --prefix backups/
+```
+
+</CodeTab>
+</CodeTabs>
+
+## 12 Built-In Presets
+
+Pass `--provider <preset>` to `rship auth s3`. Any preset profile can still be overridden with explicit flags such as `--region`, `--endpoint`, `--force-path-style`, or `--strict-sigv4`.
+
+| Preset | Service | Default Region | Addressing | Max Object | Checksums & Quirks |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `aws` | Amazon S3 | `us-east-1` | Virtual-hosted | `~48.8 TiB` | `CRC64NVME`, `CRC32C`, `SHA256`, `MD5`; `If-None-Match` & `If-Match` |
+| `r2` | Cloudflare R2 | `auto` | Path-style | `5 TiB` | `CRC32C`, `SHA256`, `MD5`; **equal non-final part size enforced**; `If-None-Match` & `If-Match` |
+| `minio` | MinIO / Silo | `us-east-1` | Path-style | `5 TiB` | `CRC32C`, `SHA256`, `MD5`; `If-None-Match` & `If-Match` |
+| `oss` | Alibaba Cloud OSS | `oss-cn-hangzhou` | Virtual-hosted | `~48.8 TiB` | `SHA256`, `MD5` |
+| `b2` | Backblaze B2 | `us-west-000` | Path-style | `10 TiB` | `SHA256`, `SHA1`, `MD5` |
+| `wasabi` | Wasabi Hot Cloud | `us-east-1` | Virtual-hosted | `5 TiB` | `SHA256`, `MD5`; `If-None-Match` |
+| `digitalocean` | DigitalOcean Spaces | `nyc3` | Virtual-hosted | `5 TiB` | `SHA256`, `MD5` |
+| `cos` | Tencent Cloud COS | `ap-guangzhou` | Virtual-hosted | `~48.8 TiB` | `SHA256`, `MD5` |
+| `tigris` | Tigris Storage | `auto` | Virtual-hosted | `5 TiB` | Endpoint `fly.storage.tigris.dev`; `CRC32C`, `SHA256`, `MD5`; `If-None-Match` & `If-Match` |
+| `scaleway` | Scaleway Object | `fr-par` | Virtual-hosted | `5 TiB` | `SHA256`, `MD5` |
+| `hetzner` | Hetzner Object | `fsn1` | Virtual-hosted | `5 TiB` | `SHA256`, `MD5` |
+| `generic` | Ceph / Garage / SeaweedFS | `us-east-1` | Path-style | `5 TiB` | `SHA256`, `MD5` (aliases: `other`, `ceph`, `seaweedfs`, `garage`) |
+
+## Authentication & Flags (`rship auth s3`)
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `<REMOTE>` | — | Logical remote name (e.g. `r2`, `aws-backups`) |
+| `--provider` | `aws` | Preset from the 12-provider table above |
+| `--bucket` | Optional | Default bucket; omit to address multiple buckets as `remote:bucket/path` |
+| `--prefix` | Empty | Optional key prefix scoped inside the bucket |
+| `--region` | Preset default | AWS / vendor region string |
+| `--endpoint` | Preset default | Custom endpoint URL (required for `r2`, `minio`, `generic`) |
+| `--force-path-style` | Preset default | Force `endpoint/bucket/key` (`true`) or `bucket.endpoint/key` (`false`) |
+| `--env-auth` | `false` | Resolve `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` from env |
+| `--strict-sigv4` | `false` | Force full SHA-256 payload hashing even over HTTPS |
+| `--storage-class` | None | Send `x-amz-storage-class` header on object writes (e.g. `STANDARD_IA`, `GLACIER`) |
+
+## Protocol Internals & Crash Resume
+
+- **Single-shot vs. parallel multipart**: Objects `<= 16 MiB` (`single_shot_max_bytes`) upload via a single `PutObject`; larger files stream through `CreateMultipartUpload` + parallel `UploadPart` workers (`--part-concurrency 4`, `16 MiB` default part size, `5 MiB` minimum, up to `10,000` parts).
+- **Paginated `ListParts` crash-resume**: Upload IDs and completed part ETag/offsets are journaled in SQLite WAL. After a crash or `SIGKILL`, `rship` paginates `ListParts` and uploads only missing parts before calling `CompleteMultipartUpload`. Run `rship gc --all` to abort stale server-side multipart uploads.
+- **Zero `aws-chunked` overhead**: By default (`PayloadSigningMode::Auto`), HTTPS uploads send `x-amz-content-sha256: UNSIGNED-PAYLOAD` to eliminate an extra digest pass; plain `http://` endpoints or `--strict-sigv4` automatically compute streaming SHA-256 payload digests.
+- **Server-side copy & range reads**: Same-remote transfers use `CopyObject` for objects up to `5 GiB` and switch automatically to multipart `UploadPartCopy` above `5 GiB`. `rship cat` supports HTTP `Range` byte offsets.
+- **rclone migration**: Existing `[remote]` sections with `type = s3` (and `provider` / `endpoint` / `access_key_id` / `secret_access_key`) import cleanly via `rship config import-rclone`.
+
+## Next Steps
+
+- [Protect secrets in OS Keyring or Docker](/guide/deployment)
+- [Wrap an S3 bucket in STREAM OAE2 client-side encryption](/guide/encryption)
