@@ -171,7 +171,7 @@ export function DocsLayout({ doc, DocComponent, sidebarOpen, onCloseSidebar }: D
   )
 
   return (
-    <div className="mx-auto flex max-w-[1320px] items-start gap-8 px-4 pb-20 pt-6 sm:px-6 lg:px-8">
+    <div className="mx-auto flex max-w-[1320px] items-start gap-8 px-4 pb-20 pt-6 sm:px-6 lg:px-8 xl:max-w-[1440px] 2xl:max-w-[1600px]">
       {/* Desktop Sticky Left Sidebar */}
       <aside className="sticky top-[74px] hidden max-h-[calc(100vh-92px)] w-[236px] shrink-0 overflow-y-auto pr-3 lg:block">
         {sidebarContent}
@@ -192,7 +192,11 @@ export function DocsLayout({ doc, DocComponent, sidebarOpen, onCloseSidebar }: D
       )}
 
       {/* Main Center Prose Column */}
-      <main id="main-content" tabIndex={-1} className="min-w-0 max-w-[760px] flex-1 outline-none">
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className="mx-auto min-w-0 max-w-[760px] flex-1 outline-none xl:max-w-[820px] 2xl:max-w-[900px]"
+      >
         <header className="mb-7 border-b border-[var(--border)] pb-5">
           <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
             <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.08em] text-[var(--brand)]">
@@ -208,12 +212,12 @@ export function DocsLayout({ doc, DocComponent, sidebarOpen, onCloseSidebar }: D
             </button>
           </div>
 
-          <h1 className="m-0 mb-2 text-[28px] leading-[1.15] font-semibold tracking-[-0.035em] text-[var(--fg)] sm:text-[32px]">
+          <h1 className="m-0 mb-2 text-[28px] leading-[1.15] font-semibold tracking-[-0.035em] text-[var(--fg)] sm:text-[32px] 2xl:text-[36px]">
             {pageTitle}
           </h1>
 
           {doc.meta.description && (
-            <p className="m-0 text-[15px] leading-[1.6] text-[var(--muted)]">
+            <p className="m-0 text-[15px] leading-[1.6] text-[var(--muted)] 2xl:text-[16px]">
               {doc.meta.description}
             </p>
           )}

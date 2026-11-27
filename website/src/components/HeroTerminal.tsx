@@ -149,7 +149,7 @@ export function HeroTerminal() {
   return (
     <section className="overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--surface)]">
       <div className="flex h-10 items-center justify-between gap-2.5 border-b border-[var(--border)] bg-[var(--chrome)] px-4">
-        <span className="inline-flex items-center gap-2 font-mono text-[11px] text-[var(--muted)]">
+        <span className="inline-flex items-center gap-2 font-mono text-[11px] text-[var(--muted)] 2xl:text-[12px]">
           <span
             className={`h-1.5 w-1.5 rounded-full ${
               simState === 'killed' ? 'bg-[var(--err)]' : 'bg-[var(--ok)]'
@@ -161,13 +161,13 @@ export function HeroTerminal() {
         <button
           type="button"
           onClick={() => dispatch({ type: 'TOGGLE' })}
-          className={`inline-flex h-[26px] cursor-pointer items-center rounded-[5px] border px-2.5 font-mono text-[10.5px] font-medium transition-colors ${btnClass}`}
+          className={`inline-flex h-[26px] cursor-pointer items-center rounded-[5px] border px-2.5 font-mono text-[10.5px] font-medium transition-colors 2xl:text-[11.5px] ${btnClass}`}
         >
           {btnLabel}
         </button>
       </div>
 
-      <div className="overflow-x-auto px-5 py-4 font-mono text-[12px] leading-[1.75] tabular-nums">
+      <div className="overflow-x-auto px-5 py-4 font-mono text-[12px] leading-[1.75] tabular-nums 2xl:text-[13px]">
         <div className="min-w-[500px]">
           <div className="mb-3 text-[var(--fg)]">
             <span className="mr-2 font-semibold text-[var(--brand)]">$</span>
@@ -208,11 +208,11 @@ export function HeroTerminal() {
             </span>
           </div>
 
-          <div className="mb-3.5 pl-4 text-[11px] text-[var(--muted)]">
+          <div className="mb-3.5 pl-4 text-[11px] text-[var(--muted)] 2xl:text-[11.5px]">
             {t.home.terminal.statsSummary}
           </div>
 
-          <div className="flex flex-col gap-1.5 pl-4 text-[11.5px]">
+          <div className="flex flex-col gap-1.5 pl-4 text-[11.5px] 2xl:text-[12.5px]">
             <div className="grid grid-cols-[26px_minmax(0,1fr)_100px_38px] items-center gap-3">
               <span className="text-[var(--brand)]">[L]</span>
               <span className="truncate text-[var(--fg)]">photos/RAW_8842.dng</span>
@@ -251,7 +251,7 @@ export function HeroTerminal() {
 
           {eventKind !== 'none' && (
             <div
-              className={`mt-3.5 border-t border-dashed border-[var(--border)] pt-3 text-[11px] ${
+              className={`mt-3.5 border-t border-dashed border-[var(--border)] pt-3 text-[11px] 2xl:text-[12px] ${
                 eventKind === 'killed' ? 'text-[var(--err)]' : 'text-[var(--ok)]'
               }`}
             >

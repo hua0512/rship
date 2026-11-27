@@ -5,6 +5,18 @@
     line-height: 1.72;
   }
 
+  @media (min-width: 1280px) {
+    .mdx-prose {
+      font-size: 15.5px;
+    }
+  }
+
+  @media (min-width: 1536px) {
+    .mdx-prose {
+      font-size: 16px;
+    }
+  }
+
   .mdx-prose > *:first-child {
     margin-top: 0;
   }

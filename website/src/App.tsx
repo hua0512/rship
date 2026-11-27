@@ -155,7 +155,7 @@ function HomeSkeleton() {
     <main
       id="main-content"
       tabIndex={-1}
-      className="mx-auto max-w-[920px] px-4 pb-16 pt-14 outline-none sm:px-8"
+      className="mx-auto max-w-[920px] px-4 pb-16 pt-14 outline-none sm:px-8 xl:max-w-[1120px] 2xl:max-w-[1280px]"
       aria-busy="true"
     >
       <div className="mb-4 h-3 w-48 rounded bg-[var(--chrome)]" />
@@ -168,12 +168,12 @@ function HomeSkeleton() {
 
 function DocSkeleton() {
   return (
-    <div className="mx-auto flex max-w-[1320px] items-start gap-8 px-4 pb-20 pt-8 sm:px-6 lg:px-8">
+    <div className="mx-auto flex max-w-[1320px] items-start gap-8 px-4 pb-20 pt-8 sm:px-6 lg:px-8 xl:max-w-[1440px] 2xl:max-w-[1600px]">
       <div className="hidden w-[236px] shrink-0 lg:block" />
       <main
         id="main-content"
         tabIndex={-1}
-        className="min-w-0 max-w-[760px] flex-1 outline-none"
+        className="mx-auto min-w-0 max-w-[760px] flex-1 outline-none xl:max-w-[820px] 2xl:max-w-[900px]"
         aria-busy="true"
       >
         <div className="mb-3 h-3 w-28 rounded bg-[var(--chrome)]" />

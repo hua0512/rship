@@ -165,7 +165,7 @@ export function Navbar({
 
   return (
     <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[var(--bg)]/88 backdrop-blur-md">
-      <div className="mx-auto flex h-14 max-w-[1320px] items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
+      <div className="mx-auto flex h-14 max-w-[1320px] items-center justify-between gap-3 px-4 sm:px-6 lg:px-8 xl:max-w-[1440px] 2xl:max-w-[1600px]">
         <div className="flex items-center gap-3">
           {showSidebarToggle && onToggleSidebar && (
             <button
@@ -186,8 +186,8 @@ export function Navbar({
             className="inline-flex items-center gap-2.5 text-[var(--fg)] no-underline"
           >
             <Logo size={22} />
-            <span className="text-[15px] font-semibold tracking-[-0.03em]">rship</span>
-            <span className="hidden rounded border border-[var(--border)] bg-[var(--chrome)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--muted)] sm:inline-block">
+            <span className="text-[15px] font-semibold tracking-[-0.03em] 2xl:text-[16px]">rship</span>
+            <span className="hidden rounded border border-[var(--border)] bg-[var(--chrome)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--muted)] sm:inline-block 2xl:text-[10.5px]">
               v{APP_VERSION}
             </span>
           </Link>
@@ -204,7 +204,7 @@ export function Navbar({
                 aria-current={active ? 'page' : undefined}
                 onMouseEnter={() => void preloadRoute(target)}
                 onFocus={() => void preloadRoute(target)}
-                className={`relative inline-flex items-center text-[13px] font-medium no-underline transition-colors ${
+                className={`relative inline-flex items-center text-[13px] font-medium no-underline transition-colors 2xl:text-[14px] ${
                   active ? 'text-[var(--fg)]' : 'text-[var(--muted)] hover:text-[var(--fg)]'
                 }`}
               >
@@ -223,7 +223,7 @@ export function Navbar({
             onClick={onOpenSearch}
             onMouseEnter={preloadCommandPalette}
             onFocus={preloadCommandPalette}
-            className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)]/80 px-2.5 text-[12px] text-[var(--muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--fg)]"
+            className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)]/80 px-2.5 text-[12px] text-[var(--muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--fg)] 2xl:text-[12.5px]"
             aria-label={t.nav.search}
           >
             <Search size={13} />

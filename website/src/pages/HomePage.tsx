@@ -34,7 +34,7 @@ export function HomePage() {
   }
 
   return (
-    <div className="mx-auto max-w-[920px] px-4 pb-16 pt-4 sm:px-8">
+    <div className="mx-auto max-w-[920px] px-4 pb-16 pt-4 sm:px-8 xl:max-w-[1120px] 2xl:max-w-[1280px]">
       <main id="main-content" tabIndex={-1} className="outline-none">
       {/* Spacious, Confident Hero */}
       <section className="grid grid-cols-1 items-center gap-8 py-10 sm:py-12 md:grid-cols-[minmax(0,1fr)_172px]">
@@ -44,12 +44,12 @@ export function HomePage() {
             {t.home.overline}
           </div>
 
-          <h1 className="m-0 mb-4 text-[34px] leading-[1.06] font-semibold tracking-[-0.045em] text-[var(--fg)] sm:text-[42px]">
+          <h1 className="m-0 mb-4 text-[34px] leading-[1.06] font-semibold tracking-[-0.045em] text-[var(--fg)] sm:text-[42px] xl:text-[46px] 2xl:text-[50px]">
             {t.home.titlePrimary}
             <span className="block font-medium text-[var(--muted)]">{t.home.titleMuted}</span>
           </h1>
 
-          <p className="m-0 mb-7 max-w-[460px] text-[14.5px] leading-[1.65] text-[var(--muted)]">
+          <p className="m-0 mb-7 max-w-[460px] text-[14.5px] leading-[1.65] text-[var(--muted)] xl:text-[15px] 2xl:max-w-[520px] 2xl:text-[15.5px]">
             {t.home.lead}
           </p>
 
@@ -113,7 +113,7 @@ export function HomePage() {
             </div>
           </div>
 
-          <div className="mt-3 text-[12.5px] text-[var(--muted)]">
+          <div className="mt-3 text-[12.5px] text-[var(--muted)] 2xl:text-[13.5px]">
             {t.home.migrateHintPrefix}{' '}
             <Link
               to={migrateTo}
@@ -208,13 +208,15 @@ export function HomePage() {
                 idx === 3 ? 'border-b-0 lg:border-r-0' : ''
               } ${idx === 2 ? 'sm:border-b-0' : ''}`}
             >
-              <span className="font-mono text-[10px] font-semibold text-[var(--brand)]">
+              <span className="font-mono text-[10px] font-semibold text-[var(--brand)] 2xl:text-[11px]">
                 {cap.index}
               </span>
-              <span className="text-[13.5px] font-semibold tracking-[-0.015em] text-[var(--fg)] group-hover:text-[var(--brand)]">
+              <span className="text-[13.5px] font-semibold tracking-[-0.015em] text-[var(--fg)] group-hover:text-[var(--brand)] 2xl:text-[14.5px]">
                 {cap.title}
               </span>
-              <span className="text-[12.5px] leading-[1.55] text-[var(--muted)]">{cap.desc}</span>
+              <span className="text-[12.5px] leading-[1.55] text-[var(--muted)] 2xl:text-[13.5px]">
+                {cap.desc}
+              </span>
             </Link>
           )
         })}
@@ -223,13 +225,13 @@ export function HomePage() {
 
       {/* Understated Ecosystem Footer */}
       <footer className="flex flex-col gap-3 pt-5">
-        <div className="font-mono text-[11px] leading-[1.6] text-[var(--subtle)]">
+        <div className="font-mono text-[11px] leading-[1.6] text-[var(--subtle)] 2xl:text-[12px]">
           <strong className="font-medium text-[var(--muted)]">{t.home.backendsLabel}</strong>{' '}
           {t.home.backendsList}
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3 font-mono text-[11px] text-[var(--subtle)]">
+          <div className="flex flex-wrap items-center gap-3 font-mono text-[11px] text-[var(--subtle)] 2xl:text-[12px]">
             <span>
               {t.home.licenseNote} · v{APP_VERSION}
             </span>
@@ -262,7 +264,7 @@ export function HomePage() {
             </a>
           </div>
 
-          <div className="flex items-center gap-5 font-mono text-[11px]">
+          <div className="flex items-center gap-5 font-mono text-[11px] 2xl:text-[12px]">
             <Link
               to={benchmarksTo}
               onMouseEnter={() => void preloadRoute(benchmarksTo)}
